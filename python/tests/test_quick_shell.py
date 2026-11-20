@@ -2649,17 +2649,8 @@ def test_the_overview_counts_live_issues_and_names_the_mode(engine_window, qapp)
 def test_the_overview_announces_each_new_state_once(engine_window, qapp, monkeypatch) -> None:
     window, _engine = engine_window
     heard: list[str] = []
-
-    class Accessibility:
-        @staticmethod
-        def isActive() -> bool:
-            return True
-
-        @staticmethod
-        def updateAccessibility(event) -> None:
-            heard.append(event.message())
-
-    monkeypatch.setattr(quick_shell, "QAccessible", Accessibility)
+    # Only the Overview's own announcements, not the status line's.
+    monkeypatch.setattr(quick_shell, "announce", lambda target, text: heard.append(text))
     overview = window.quick_bridge.model["overview"]
     window.start_btn_action.trigger()
     qapp.processEvents()

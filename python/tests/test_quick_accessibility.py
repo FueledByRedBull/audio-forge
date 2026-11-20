@@ -1166,8 +1166,16 @@ def test_page_up_page_down_and_the_arrows_scroll_a_page_and_focus_scrolls_to_its
     assert page.property("contentY") == 0
     _press(window, Qt.Key.Key_PageUp, qapp)
     assert page.property("contentY") == 0, "never past the top"
+    # Home and End go to the ends, as in a dialog's page.
+    _press(window, Qt.Key.Key_End, qapp)
+    assert page.property("contentY") == page.property("contentHeight") - page.height()
+    _press(window, Qt.Key.Key_End, qapp)
+    assert page.property("contentY") == page.property("contentHeight") - page.height(), "never past the end"
+    _press(window, Qt.Key.Key_Home, qapp)
+    assert page.property("contentY") == 0
     # A modified key is a shortcut for something else.
     _press(window, Qt.Key.Key_Down, qapp, Qt.KeyboardModifier.ControlModifier)
+    _press(window, Qt.Key.Key_End, qapp, Qt.KeyboardModifier.AltModifier)
     assert page.property("contentY") == 0
     # Focus on a control that is out of view brings it in.
     _open_every_disclosure(window, qapp)

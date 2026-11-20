@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QObject, Property, QPoint, QTimer, Signal, Slot
-from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent, QAction, QCursor
+from PySide6.QtGui import QAction, QCursor
 from PySide6.QtWidgets import QMenu, QWidget
 
 from .announcements import announce
@@ -73,8 +73,8 @@ class StatusState(TextState):
         self._expiry.stop()
         # A status line changes without focus, so assistive technology is told about it.
         window = self.parent()
-        if message and message != self._text and isinstance(window, QWidget) and QAccessible.isActive():
-            QAccessible.updateAccessibility(QAccessibleAnnouncementEvent(window, message))
+        if message != self._text and isinstance(window, QWidget):
+            announce(window, message)
         self.update(text=message)
         if timeout > 0:
             self._expiry.start(timeout)

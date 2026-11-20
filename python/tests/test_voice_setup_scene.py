@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -13,6 +14,7 @@ from PySide6.QtGui import QAccessible, QColor, QFont
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialog
+from shiboken6 import delete
 
 from capture_helpers import finish_take
 from mic_eq.config import TARGET_CURVES, EQSettings, build_eq_candidate_settings
@@ -129,9 +131,9 @@ def test_the_scene_loads_and_every_control_has_its_accessible_name(open_dialog) 
         "contentScroll": "Auto Voice Setup page",
         "curvePicker": f"Tone preset: {FIRST_CURVE.name}",
         "dynamicsPicker": "Compression: Balanced",
-        "p95Number": "Typical compressor evening-out in decibels",
-        "peakNumber": "Strongest compressor squeeze allowed in decibels",
-        "lufsNumber": "Voice setup target loudness",
+        "p95Number": "Typical compressor evening-out in decibels: 3.50 dB",
+        "peakNumber": "Strongest compressor squeeze allowed in decibels: 8.00 dB",
+        "lufsNumber": "Voice setup target loudness: -18.00 LUFS",
         "mutedNotice": LIVE_OUTPUT_MUTED_NOTICE,
         "progressBar": "Voice Setup progress",
         "levelMeter": "Voice Setup input level",
@@ -163,13 +165,8 @@ def test_the_scene_loads_and_every_control_has_its_accessible_name(open_dialog) 
             assert QAccessible.queryAccessibleInterface(scene_item(dialog, key)).role() == QAccessible.Role.Grouping
         meter = QAccessible.queryAccessibleInterface(scene_item(dialog, "levelMeter"))
         assert meter.role() == QAccessible.Role.ProgressBar
-        # A spin box counts in 10^decimals, so these read as text in real units instead.
-        shown = {"p95Number": "3.50 dB", "peakNumber": "8.00 dB", "lufsNumber": "-18.00 LUFS"}
-        for key, text in shown.items():
-            box = QAccessible.queryAccessibleInterface(scene_item(dialog, key))
-            assert box.role() == QAccessible.Role.EditableText
-            assert box.valueInterface() is None
-            assert box.text(QAccessible.Text.Value) == text
+        for key in ("p95Number", "peakNumber", "lufsNumber"):
+            assert QAccessible.queryAccessibleInterface(scene_item(dialog, key)).role() == QAccessible.Role.SpinBox
     assert {scene_text(dialog, key) for key in BUTTONS} == {
         "Cancel", "Retake", "Compare Recording", "Continue Anyway", "Start Voice Setup"
     }
@@ -417,9 +414,10 @@ def test_a_number_is_stepped_from_the_keyboard_typed_and_held_in_its_range(open_
     qapp.processEvents()
     assert view.number("peak") == 6.25
     assert scene_item(dialog, "peakNumber").property("value") == 625
-    with _AccessibleScene():
-        peak = QAccessible.queryAccessibleInterface(scene_item(dialog, "peakNumber"))
-        assert peak.text(QAccessible.Text.Value) == "6.25 dB"
+    with _AccessibleScene() as scene:
+        assert scene.name(scene_item(dialog, "peakNumber")) == (
+            "Strongest compressor squeeze allowed in decibels: 6.25 dB"
+        )
     # The target loudness is held between -24 and -12 LUFS.
     view.setNumber("lufs", -40.0)
     assert view.number("lufs") == -24.0
@@ -963,3 +961,16 @@ def test_a_dialog_opens_without_announcing_what_it_starts_with(open_dialog, qapp
     dialog = open_dialog()
     qapp.processEvents()
     assert spoken == [] and dialog.flow.view_model.shown["phaseText"]
+
+
+def test_a_view_destroyed_with_an_announcement_pending_says_nothing_and_raises_nothing(
+    open_dialog, qapp, monkeypatch
+) -> None:
+    dialog = open_dialog()
+    spoken = spoken_announcements(monkeypatch)
+    errors: list[object] = []
+    monkeypatch.setattr(sys, "excepthook", lambda *args: errors.append(args))
+    dialog.flow.view_model.set_page(phaseText="Capturing speech")
+    delete(dialog.quick_view)
+    qapp.processEvents()
+    assert spoken == [] and errors == []

@@ -4,7 +4,9 @@ There is one output, so callers hear the original too. The hold only turns the s
 off in the engine (``EQState.hold_original``); the settings, the undo history, the
 unsaved-change count and every save stay as they were. Whatever could leave the EQ
 off without a release ends the hold: the window hiding, minimising or losing focus,
-audio stopping or being borrowed, the device going away, or any EQ edit.
+audio stopping or being borrowed, the device going away, or any EQ edit. A hold latched by
+an assistive technology's activation has no press to lose, so losing the focus or the window
+being deactivated leaves it on; everything else ends it.
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ _STOPPED_STATES = ("ready", "no_mic")
 class _View(NamedTuple):
     held: bool
     reason: str  # why the button cannot be used; empty when it can
+    latched: bool  # held by an assistive technology's activation, not by a press
 
 
 class EQHoldCompare(QObject):
@@ -79,6 +82,8 @@ class EQHoldCompare(QObject):
         self._overview = overview
         # What a latched hold announces itself from.
         self._window = window
+        # A latch has no press to end it, so it outlives the focus and the window being active.
+        self._latched = False
         self._view = self._read()
         state.changed.connect(self.refresh)
         state.originalHeldChanged.connect(self.refresh)
@@ -94,9 +99,11 @@ class EQHoldCompare(QObject):
             reason = DEVICE_LOST_REASON
         else:
             reason = ""
-        return _View(self._state.original_held, reason)
+        held = self._state.original_held
+        return _View(held, reason, held and self._latched)
 
     held = Property(bool, lambda self: self._view.held, notify=changed)
+    latched = Property(bool, lambda self: self._view.latched, notify=changed)
     enabled = Property(bool, lambda self: not self._view.reason, notify=changed)
     toolTip = Property(
         str, lambda self: f"{self._view.reason} {HOLD_TIP}" if self._view.reason else HOLD_TIP, notify=changed
@@ -105,7 +112,7 @@ class EQHoldCompare(QObject):
         str,
         lambda self: self.toolTip
         if self._view.reason
-        else f"{LATCHED_DESCRIPTION if self._view.held else UNLATCHED_DESCRIPTION} {HOLD_TIP}",
+        else f"{LATCHED_DESCRIPTION if self._view.latched else UNLATCHED_DESCRIPTION} {HOLD_TIP}",
         notify=changed,
     )
     text = Property(str, lambda self: HOLD_LABEL, constant=True)
@@ -121,7 +128,18 @@ class EQHoldCompare(QObject):
             self._state.hold_original()
 
     @Slot()
+    def latch(self) -> None:
+        """Hold the original until released; for an assistive technology, which cannot hold."""
+        self.refresh()
+        if self.enabled:
+            self._state.hold_original()
+            if self._state.original_held:
+                self._latched = True
+                self.refresh()
+
+    @Slot()
     def release(self) -> None:
+        self._latched = False
         self._state.release_original()
 
     @Slot(bool)
@@ -131,6 +149,8 @@ class EQHoldCompare(QObject):
 
     @Slot()
     def refresh(self) -> None:
+        if not self._state.original_held:
+            self._latched = False
         view = self._read()
         if view.held and view.reason:
             # Released here, the state's signal reads the view again.
@@ -148,7 +168,7 @@ class EQHoldCompare(QObject):
 
     def eventFilter(self, watched, event) -> bool:
         kind = event.type()
-        if kind in (QEvent.Type.Hide, QEvent.Type.WindowDeactivate) or (
+        if kind == QEvent.Type.Hide or (kind == QEvent.Type.WindowDeactivate and not self._latched) or (
             kind == QEvent.Type.WindowStateChange
             and watched.windowState() & Qt.WindowState.WindowMinimized
         ):

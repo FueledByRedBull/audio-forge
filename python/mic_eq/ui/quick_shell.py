@@ -25,8 +25,6 @@ from PySide6.QtCore import (
     Slot,
 )
 from PySide6.QtGui import (
-    QAccessible,
-    QAccessibleAnnouncementEvent,
     QDesktopServices,
     QKeySequence,
     QPainter,
@@ -37,6 +35,7 @@ from PySide6.QtQml import qmlRegisterType, qmlRegisterUncreatableType
 from PySide6.QtQuick import QQuickPaintedItem, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
+from .announcements import announce
 from .chain_presentation import ChainInputs, ChainLine, describe_chain
 from . import platform_text
 from .command_palette import SHORTCUT as PALETTE_SHORTCUT, CommandPalette, window_commands
@@ -337,10 +336,7 @@ class OverviewState(QObject):
         if view.state == self._announced:
             return
         self._announced = view.state
-        if QAccessible.isActive():
-            QAccessible.updateAccessibility(
-                QAccessibleAnnouncementEvent(self._window, f"{view.headline}. {view.detail}")
-            )
+        announce(self._window, f"{view.headline}. {view.detail}")
 
 
 def chain_inputs(window) -> ChainInputs:

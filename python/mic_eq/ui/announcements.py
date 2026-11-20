@@ -32,7 +32,16 @@ class Announcer(QObject):
         self._timer.timeout.connect(self._flush)
 
     def attach(self, target: QObject) -> None:
+        if self._target is not None:
+            self._target.destroyed.disconnect(self._detach)
         self._target = target
+        target.destroyed.connect(self._detach)
+
+    def _detach(self) -> None:
+        """The widget is gone: what is waiting to be said has nowhere to come from."""
+        self._timer.stop()
+        self._pending = []
+        self._target = None
 
     def say(self, text: str) -> None:
         text = text.strip()

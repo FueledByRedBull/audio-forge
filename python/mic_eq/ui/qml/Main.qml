@@ -328,8 +328,13 @@ Rectangle {
         // A hold ended elsewhere (an edit, Stop, the window going away) is no longer this button's.
         readonly property bool held: proxy ? proxy.held : false
         onHeldChanged: if (!held) holding = false
+        // Latched by assistive technology instead of held: no press to lose, so only a new
+        // press, the button hiding or being disabled, Stop and the like end it.
+        readonly property bool latched: proxy ? proxy.latched : false
         function begin() {
-            if (!holding && proxy && proxy.enabled) {
+            if (latched) {
+                proxy.release()
+            } else if (!holding && proxy && proxy.enabled) {
                 proxy.press()
                 holding = proxy.held
             }
@@ -339,6 +344,11 @@ Rectangle {
                 holding = false
                 proxy.release()
             }
+        }
+        function endAll() {
+            end()
+            if (latched)
+                proxy.release()
         }
         function holdKey(event) {
             return event.key === Qt.Key_Space
@@ -367,8 +377,8 @@ Rectangle {
         onPressedChanged: pressed ? begin() : end()
         onCanceled: end()
         onActiveFocusChanged: if (!activeFocus) end()
-        onVisibleChanged: if (!visible) end()
-        onEnabledChanged: if (!enabled) end()
+        onVisibleChanged: if (!visible) endAll()
+        onEnabledChanged: if (!enabled) endAll()
         Keys.onPressed: event => {
             if (holdKey(event)) {
                 event.accepted = true
@@ -386,15 +396,18 @@ Rectangle {
         Accessible.name: proxy ? proxy.name : ""
         Accessible.description: proxy ? proxy.accessibleDescription : ""
         // Assistive technology cannot hold a button, so activating it latches the comparison
-        // on and activating it again returns; it ends wherever a hold ends.
+        // on and activating it again returns.
         function latch() {
-            const before = holding
+            if (!proxy)
+                return
+            const before = latched
+            holding = false
             if (before)
-                end()
+                proxy.release()
             else
-                begin()
-            if (holding !== before)
-                proxy.announceLatch(holding)
+                proxy.latch()
+            if (proxy.latched !== before)
+                proxy.announceLatch(proxy.latched)
         }
         // The check state is the model's, as in ModelButton: it only tells assistive technology
         // which voice is playing, and a click's toggle is put back.
@@ -779,7 +792,7 @@ Rectangle {
         }
     }
 
-    component Page: Flickable {
+    component Page: ScrollArea {
         id: page
         default property alias content: column.data
         property alias spacing: column.spacing
@@ -792,36 +805,10 @@ Rectangle {
         // The height the page keeps from its content: the room above the column and below it.
         readonly property int verticalOverhead: 24
         contentHeight: column.implicitHeight + verticalOverhead
-        boundsBehavior: Flickable.StopAtBounds
         // A mouse drag belongs to the controls; wheel, scroll bar and touch still scroll.
         acceptedButtons: Qt.NoButton
-        clip: true
-        // Keep the control that has keyboard focus on screen.
-        readonly property Item focusItem: Window.activeFocusItem
-        onFocusItemChanged: {
-            var item = focusItem
-            for (var p = item; p && p !== column; p = p.parent) {}
-            if (!visible || !p || root.pressing)
-                return
-            var top = item.mapToItem(contentItem, 0, 0).y
-            if (top < contentY + 12)
-                contentY = Math.max(0, top - 12)
-            else if (top + item.height > contentY + height - 12)
-                contentY = Math.min(contentHeight - height, top + item.height - height + 12)
-        }
-        // Keys the focused control did not take scroll the page: Page Up and Page Down by a
-        // screen, the arrows by a few lines unless the focus is in a text field.
-        readonly property real lineStep: root.fsBody * 3
-        Keys.onPressed: event => {
-            const by = event.key === Qt.Key_PageDown ? height : event.key === Qt.Key_PageUp ? -height
-                     : event.key === Qt.Key_Down ? lineStep : event.key === Qt.Key_Up ? -lineStep : 0
-            const typing = (focusItem as TextInput) !== null || (focusItem as TextEdit) !== null
-            const shortcut = event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
-            if (by === 0 || shortcut || (typing && Math.abs(by) === lineStep))
-                return
-            contentY = Math.max(0, Math.min(contentHeight - height, contentY + by))
-            event.accepted = true
-        }
+        followed: column
+        following: !root.pressing
         ScrollBar.vertical: ScrollBar {
             id: bar
             Accessible.name: page.scrollName

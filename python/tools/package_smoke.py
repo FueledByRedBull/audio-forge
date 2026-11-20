@@ -52,6 +52,7 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/mic_eq/ui/qml/PushButton.qml",
     "_internal/mic_eq/ui/qml/qmldir",
     "_internal/mic_eq/ui/qml/RecordingProgress.qml",
+    "_internal/mic_eq/ui/qml/ScrollArea.qml",
     "_internal/mic_eq/ui/qml/ScrollPage.qml",
     "_internal/mic_eq/ui/qml/StepMark.qml",
     "_internal/mic_eq/ui/qml/Surface.qml",

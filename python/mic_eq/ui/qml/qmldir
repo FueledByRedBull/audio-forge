@@ -15,6 +15,7 @@ MutedText 1.0 MutedText.qml
 NumberBox 1.0 NumberBox.qml
 ProgressTrack 1.0 ProgressTrack.qml
 PushButton 1.0 PushButton.qml
+ScrollArea 1.0 ScrollArea.qml
 ScrollPage 1.0 ScrollPage.qml
 StepMark 1.0 StepMark.qml
 Surface 1.0 Surface.qml

@@ -31,6 +31,7 @@ from mic_eq.ui.main_window import MINIMUM_WINDOW_HEIGHT, MINIMUM_WINDOW_WIDTH
 from mic_eq.ui.quick_shell import _scene_stopped
 from test_quick_accessibility import (  # noqa: F401  (fixtures)
     EQUALIZER,
+    HEALTH,
     _focus,
     _iface,
     _items,
@@ -709,7 +710,6 @@ def test_a_latched_original_ends_wherever_a_hold_ends(live, qapp) -> None:
     button = _find(window, "holdOriginal")
     ends = (
         lambda: window.eq_state.set_band_value(0, "gain_db", -4.0) or window.eq_state.flush(),
-        lambda: QCoreApplication.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate)),
         lambda: window.engine_session._emit(AudioBorrowed("voice setup", False)),
         lambda: window.stop_btn_action.trigger(),
     )
@@ -731,6 +731,101 @@ def test_a_latched_original_ends_wherever_a_hold_ends(live, qapp) -> None:
                 _perform(button, "pressAction")
                 qapp.processEvents()
                 assert not _held(window)
+
+
+def test_a_latched_original_survives_the_focus_leaving_and_the_window_deactivating(live, qapp) -> None:
+    window = live
+    button = _find(window, "holdOriginal")
+    graph = _graph_item(window.centralWidget().rootObject())
+    with _AccessibleScene():
+        _focus(window, button, qapp)
+        _perform(button, "pressAction")
+        qapp.processEvents()
+        assert _held(window) and _compare(window).latched
+        # A screen reader moving its focus elsewhere does both.
+        _focus(window, graph, qapp)
+        assert _held(window)
+        QCoreApplication.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate))
+        qapp.processEvents()
+        assert _held(window) and _compare(window).latched
+        _perform(button, "pressAction")
+        qapp.processEvents()
+        assert not _held(window) and not _compare(window).latched
+
+
+def test_a_hold_still_ends_on_the_focus_leaving_and_the_window_deactivating_beside_a_latch(live, qapp) -> None:
+    window = live
+    button = _find(window, "holdOriginal")
+    graph = _graph_item(window.centralWidget().rootObject())
+    with _AccessibleScene():
+        _perform(button, "pressAction")
+        qapp.processEvents()
+        assert _compare(window).latched
+        _perform(button, "pressAction")
+        qapp.processEvents()
+    _focus(window, button, qapp)
+    _key(window, QEvent.Type.KeyPress, Qt.Key.Key_Space, " ")
+    assert _held(window) and not _compare(window).latched
+    _focus(window, graph, qapp)
+    assert not _held(window)
+    _hold(window, qapp)
+    QCoreApplication.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate))
+    qapp.processEvents()
+    assert not _held(window)
+
+
+@pytest.mark.parametrize("how", ["pointer", "space", "b"])
+def test_a_press_on_the_button_ends_a_latch_and_starts_no_hold(live, qapp, how) -> None:
+    window = live
+    button = _find(window, "holdOriginal")
+    view = window.centralWidget()
+    with _AccessibleScene():
+        _perform(button, "pressAction")
+        qapp.processEvents()
+        assert _held(window) and _compare(window).latched
+    if how == "pointer":
+        QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=_centre(button))
+    else:
+        _focus(window, button, qapp)
+        key, text = (Qt.Key.Key_Space, " ") if how == "space" else (Qt.Key.Key_B, "b")
+        _key(window, QEvent.Type.KeyPress, key, text)
+    qapp.processEvents()
+    assert not _held(window) and not _compare(window).latched
+    if how == "pointer":
+        QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=_centre(button))
+    else:
+        _key(window, QEvent.Type.KeyRelease, key, text)
+    qapp.processEvents()
+    assert not _held(window)
+
+
+def test_leaving_the_equalizer_page_ends_a_latch(live, qapp) -> None:
+    window = live
+    button = _find(window, "holdOriginal")
+    with _AccessibleScene():
+        _perform(button, "pressAction")
+        qapp.processEvents()
+        assert _held(window) and _compare(window).latched
+    window.shell_page.setIndex(HEALTH)
+    qapp.processEvents()
+    assert not _compare(window).held and not _compare(window).latched and _engine_on(window)
+
+
+def test_the_description_says_to_return_only_while_the_original_is_latched(live, qapp) -> None:
+    window = live
+    button = _find(window, "holdOriginal")
+    view = window.centralWidget()
+    with _AccessibleScene() as scene:
+        QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=_centre(button))
+        qapp.processEvents()
+        assert _held(window) and not _compare(window).latched
+        assert scene.description(button).startswith(UNLATCHED_DESCRIPTION)
+        assert "Activate to return" not in scene.description(button)
+        QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=_centre(button))
+        qapp.processEvents()
+        _perform(button, "pressAction")
+        qapp.processEvents()
+        assert scene.description(button).startswith(LATCHED_DESCRIPTION)
 
 
 def test_holding_with_the_pointer_or_space_is_unchanged_beside_the_latch(live, qapp) -> None:

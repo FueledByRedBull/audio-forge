@@ -134,8 +134,9 @@ HEAD_IS_TAG_COMMIT = re.compile(
 )
 # Allowed pip_audit --ignore-vuln ids, each with the dev-lock pin that causes it.
 # The ignore stops being allowed once the lock moves off that pin.
-# CVE-2026-59951, CVE-2026-116684, CVE-2026-116685, CVE-2026-116686: semgrep
-# pins mcp==1.29.0 (through 1.182.1); only its MCP server uses mcp.
+# CVE-2026-59951, CVE-2026-116684, CVE-2026-116685, CVE-2026-116686,
+# CVE-2026-115563: semgrep pins mcp==1.29.0 (through 1.186.0); only its MCP server
+# uses mcp, and CVE-2026-115563 is in the OAuth client, which semgrep does not use.
 # CVE-2026-114603, CVE-2026-126360: semgrep pins opentelemetry-api~=1.37.0
 # (through 1.186.0); both are in parsing trace headers (TraceState.from_header,
 # TraceContextTextMapPropagator.extract). semgrep only exports telemetry and reads
@@ -146,6 +147,7 @@ AUDIT_IGNORES = {
     "CVE-2026-116684": ("mcp", "1.29.0"),
     "CVE-2026-116685": ("mcp", "1.29.0"),
     "CVE-2026-116686": ("mcp", "1.29.0"),
+    "CVE-2026-115563": ("mcp", "1.29.0"),
     "CVE-2026-114603": ("opentelemetry-api", "1.37.0"),
     "CVE-2026-126360": ("opentelemetry-api", "1.37.0"),
 }

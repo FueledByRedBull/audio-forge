@@ -2305,3 +2305,24 @@ def test_the_selected_sidebar_row_reads_and_rings_on_its_fill_in_every_theme(sys
     _focus(window, other, qapp)
     (other_ring,) = _rings(window, other)
     assert _colour(other_ring, "border.color") == palette.focus_ring.lower()
+
+
+def test_a_selected_stage_that_is_off_keeps_its_dim_name_in_the_dark_look(system_window, qapp) -> None:
+    from mic_eq.ui.theme import contrast_ratio, flatten
+
+    window, palette, system = system_window, system_window.system_palette, system_window.system_colors
+    equalizer = next(row for row in window.quick_bridge.model["sidebar"]["chain"] if row["name"] == "Equalizer")
+    if equalizer["toggle"].checked:
+        equalizer["toggle"].click()
+    _show(window, qapp, EQUALIZER)
+    QTest.qWait(400)  # the name's colour fades
+    row = _named(window, "Equalizer", *PLAIN_BUTTONS)
+    assert row.property("current") is True and not equalizer["toggle"].checked
+    name = next(
+        item for item in _items(row.property("contentItem"))
+        if _kind(item) == "QQuickText" and item.property("text") == "Equalizer"
+    )
+    # Dark: the off stage's dim colour, as before. A contrast theme reads the highlighted text.
+    assert _colour(name, "color") == (palette.hover_text if system else palette.text_dim).lower()
+    if system:
+        assert contrast_ratio(_colour(name, "color"), flatten(palette.accent_row_start, palette.sidebar_top)) >= 4.5

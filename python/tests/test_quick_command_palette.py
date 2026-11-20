@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QRectF, Qt
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt
 from PySide6.QtGui import QAccessible, QColor, QKeyEvent
 from PySide6.QtQml import QQmlEngine, QQmlExpression
 from PySide6.QtTest import QSignalSpy, QTest
@@ -584,3 +584,39 @@ def test_every_text_on_the_selected_row_reads_on_its_fill_in_each_theme(themed_w
             row["group"]: palette.text_muted,
         }
     assert all(contrast_ratio(colour, fill) >= 4.5 for colour in colours.values()), colours
+
+
+def test_every_text_on_a_hovered_row_reads_on_its_fill_in_each_theme(themed_window, qapp) -> None:
+    from PySide6.QtCore import QPoint
+
+    from mic_eq.ui.theme import contrast_ratio, flatten
+
+    window, palette, system = themed_window, themed_window.system_palette, themed_window.system_colors
+    _show(window, qapp)
+    palette_model = _palette(window)
+    palette_model.show_palette()
+    QTest.qWait(400)
+    delegates = _delegates(window)
+    # An enabled row that is not the selected one, so its title is the usual text colour.
+    number = next(i for i, row in enumerate(palette_model.rows) if i != 0 and row["enabled"])
+    row, hovered = palette_model.rows[number], delegates[number]
+    centre = hovered.parentItem().mapToScene(QPointF(hovered.x() + 40, hovered.y() + hovered.height() / 2)).toPoint()
+    view = window.centralWidget()
+    QTest.mouseMove(view, QPoint(centre.x(), centre.y() - 1))
+    QTest.mouseMove(view, centre)
+    qapp.processEvents()
+    assert hovered.property("index") == number and palette_model.current == 0
+    colours = {
+        item.property("text"): QColor(item.property("color")).name()
+        for item in _items(hovered)
+        if item.metaObject().className().startswith("QQuickText") and item.property("text")
+    }
+    assert row["title"] in colours and row["detail"] in colours
+    fill = flatten(palette.control_hover, flatten(palette.glass_modal, palette.app_surface))
+    if system:
+        assert set(colours.values()) == {palette.hover_text.lower()}
+        assert all(contrast_ratio(colour, fill) >= 4.5 for colour in colours.values()), colours
+    else:
+        # The dark look keeps the usual text colours on a hovered row.
+        assert colours[row["title"]] == palette.text_primary
+        assert colours[row["detail"]] == palette.text_muted

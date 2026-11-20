@@ -1271,7 +1271,8 @@ Rectangle {
                         width: parent.width
                         text: nav.name
                         textFormat: Text.PlainText
-                        color: nav.current ? root.t.hover_text : nav.dim ? root.t.text_dim : root.t.text_primary
+                        color: nav.current && root.t.highContrast ? root.t.hover_text
+                             : nav.dim ? root.t.text_dim : root.t.text_primary
                         font.pixelSize: root.fsBody
                         font.weight: Font.DemiBold
                         elide: Text.ElideRight

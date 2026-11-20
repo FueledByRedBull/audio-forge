@@ -160,8 +160,8 @@ Item {
                     required property var modelData
                     required property int index
                     readonly property bool selected: index === overlay.commands.current
-                    // The selected fill is the highlight under a contrast theme: all its text is the highlighted text.
-                    readonly property bool plainInk: selected && Look.t.highContrast
+                    // The selected and hovered fills are the highlight under a contrast theme: all their text is the highlighted text.
+                    readonly property bool plainInk: (selected || pointer.containsMouse) && Look.t.highContrast
                     width: ListView.view.width
                     height: Math.max(44, texts.implicitHeight + 12)
                     radius: Look.t.radiusControl

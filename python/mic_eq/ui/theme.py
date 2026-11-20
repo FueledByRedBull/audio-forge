@@ -156,7 +156,8 @@ class SemanticPalette:
     data_curve: str = "#e6e8ee"
     data_marker: str = "#e8c5a6"
     data_warning: str = "#f2cf5b"
-    data_handle_selected: str = "#ececf0"
+    # The ring around the selected EQ handle: the selection color.
+    data_handle_selected: str = "#d98a4e"
     # The microphone (IN) and what callers hear (OUT), each one job only.
     signal_in: str = "#a9bbd4"
     signal_in_fill: str = "#7ea4dc"
@@ -289,7 +290,7 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         status_idle_surface=window, status_idle_text=text, status_idle_border=text,
         data_surface=window, data_surface_raised=window, data_grid=disabled,
         data_text=text, data_text_muted=text, data_curve=text,
-        data_marker=accent, data_warning=accent, data_handle_selected=text,
+        data_marker=accent, data_warning=accent, data_handle_selected=accent,
         meter_scale=text, meter_peak=text, meter_segment_off=disabled, meter_track=window, meter_track_ring=text,
         toolbar_edge=text, toolbar_rim="#00000000",
         toolbar_control_top=window, toolbar_control_bottom=window,
@@ -551,6 +552,14 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
     ("dim text on sidebar", PALETTE.text_dim, PALETTE.sidebar_top),
     ("muted text on toolbar", PALETTE.text_muted, PALETTE.toolbar_top),
     ("primary text on pane", PALETTE.text_primary, PALETTE.pane_surface),
+    # The equalizer's footer: the calibration line and the mark beside it, in its state's colour.
+    *(
+        (f"{state} status text on pane", getattr(PALETTE, f"status_{state}_text"), PALETTE.pane_surface)
+        for state in ("ok", "warn", "bad", "idle")
+    ),
+    # The Show choices and a field's unit, on a control; the chosen view on its hovered fill.
+    ("muted text on a control", PALETTE.text_muted, PALETTE.control_surface),
+    ("chosen text on a hovered control", PALETTE.hover_text, PALETTE.control_hover),
     ("accent link text", PALETTE.accent_text, PALETTE.app_surface),
     (
         "recommended action",
@@ -674,9 +683,9 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
             ("success text", PALETTE.status_ok_text),
         )
     ),
-    # The number on the selected EQ handle, dark on the band's color.
+    # The band strip's badge: the band's number, dark on the band's color.
     *(
-        (f"EQ band {number} number on handle", PALETTE.text_on_data_color, color)
+        (f"EQ band {number} number on its badge", PALETTE.text_on_data_color, color)
         for number, color in enumerate(PALETTE.eq_band_colors, start=1)
     ),
 )
@@ -702,6 +711,7 @@ def control_boundary_pairs(palette: SemanticPalette) -> tuple[tuple[str, str, st
         ("callers affected mark on its fill", palette.callers_affected,
          flatten(palette.callers_affected_fill, palette.pane_surface)),
         ("callers affected edge on pane", palette.callers_affected_edge, palette.pane_surface),
+        ("selected EQ handle ring on the graph", palette.data_handle_selected, palette.data_surface),
     )
 
 

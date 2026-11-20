@@ -144,6 +144,20 @@ def test_quick_graph_hover_reads_out_and_leaving_removes_it(qapp):
     assert model.hover is None
 
 
+def test_quick_graph_shows_the_layers_it_is_asked_for_and_refuses_others(qapp):
+    item = EQGraphItem()
+    changed = QSignalSpy(item.showChanged)
+    assert item.property("show") == "total"
+
+    item.setProperty("show", "tone")
+    assert item.property("show") == "tone" and changed.count() == 1
+    item.setProperty("show", "tone")
+    assert changed.count() == 1
+    with pytest.raises(ValueError):
+        item._set_show("input")
+    assert item.property("show") == "tone"
+
+
 def test_quick_graph_double_click_asks_for_a_reset_of_the_handle_under_it(qapp):
     model = EQGraphModel()
     item = EQGraphItem()
@@ -169,6 +183,40 @@ def test_quick_graph_double_click_asks_for_a_reset_of_the_handle_under_it(qapp):
     assert requests.count() == 0
     assert double_click(x, y)
     assert requests.count() == 1 and requests.at(0)[0] == 2
+
+
+def test_the_auto_eq_view_takes_no_presses_or_drags_on_the_band_handles(qapp):
+    model = EQGraphModel()
+    item = EQGraphItem()
+    item.setSize(QSizeF(640, 260))
+    item.setProperty("graph", model)
+    requests = QSignalSpy(model.bandResetRequested)
+    x, y = model.band_handle_position(2, 640, 260)
+    before = list(model.bands)
+
+    def send(kind, px, py):
+        point = QPointF(px, py)
+        event = QMouseEvent(
+            kind, point, point, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        handler = {
+            QEvent.Type.MouseButtonPress: item.mousePressEvent,
+            QEvent.Type.MouseMove: item.mouseMoveEvent,
+            QEvent.Type.MouseButtonDblClick: item.mouseDoubleClickEvent,
+        }[kind]
+        handler(event)
+        return event.isAccepted()
+
+    item.setProperty("show", "auto_eq")
+    assert not send(QEvent.Type.MouseButtonPress, x, y)
+    assert not send(QEvent.Type.MouseMove, x + 40, y - 30)
+    assert not send(QEvent.Type.MouseButtonDblClick, x, y)
+    assert model.dragging_band_index is None and model.bands == before
+    assert requests.count() == 0
+    # The tone view draws the handles again, and they take the press.
+    item.setProperty("show", "tone")
+    assert send(QEvent.Type.MouseButtonPress, x, y)
 
 
 def _find_graph_item(item):

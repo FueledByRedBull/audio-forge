@@ -16,14 +16,25 @@ from mic_eq.config import EQBandSettings
 from mic_eq.ui.engine_session import AudioBorrowed, RestartFailed
 from mic_eq.ui.eq_band_hint import band_hint
 from mic_eq.ui.eq_graph import EQGraphGeometry
-from mic_eq.ui.eq_hold_compare import EQ_OFF_REASON, HOLD_TIP, PILL_TEXT, STOPPED_REASON
+from mic_eq.ui.eq_hold_compare import (
+    EQ_OFF_REASON,
+    HOLD_TIP,
+    LATCHED_ANNOUNCEMENT,
+    LATCHED_DESCRIPTION,
+    PILL_TEXT,
+    STOPPED_REASON,
+    UNLATCHED_ANNOUNCEMENT,
+    UNLATCHED_DESCRIPTION,
+)
 from mic_eq.ui.eq_state import EQState
 from mic_eq.ui.main_window import MINIMUM_WINDOW_HEIGHT, MINIMUM_WINDOW_WIDTH
 from mic_eq.ui.quick_shell import _scene_stopped
 from test_quick_accessibility import (  # noqa: F401  (fixtures)
     EQUALIZER,
     _focus,
+    _iface,
     _items,
+    _perform,
     _with_proxy,
     _kind,
     _show,
@@ -32,7 +43,12 @@ from test_quick_accessibility import (  # noqa: F401  (fixtures)
     segoe_font,
     shell_window,
 )
-from test_quick_shell import _AccessibleScene, _graph_item, engine_window  # noqa: F401  (a fixture)
+from test_quick_shell import (  # noqa: F401  (a fixture)
+    _AccessibleScene,
+    _graph_item,
+    engine_window,
+    spoken_announcements,
+)
 
 PILL = "Hearing your original voice · callers hear it too · release to return"
 
@@ -652,3 +668,94 @@ def test_the_header_and_the_band_sentence_keep_clear_at_the_minimum_width(
         if sibling is not hint and sibling.isVisible():
             assert not _rect(hint).intersects(_rect(sibling)), _kind(sibling)
     assert hint.property("lineCount") >= 1 and not hint.property("truncated")
+
+
+# Assistive technology cannot hold a button: activating it latches the comparison
+
+
+@pytest.mark.parametrize("action", ["pressAction", "toggleAction"])
+def test_activating_the_button_latches_the_original_and_activating_again_returns(
+    live, qapp, monkeypatch, action
+) -> None:
+    window = live
+    button = _find(window, "holdOriginal")
+    sent = spoken_announcements(monkeypatch)
+    with _AccessibleScene() as scene:
+        interface = _iface(button)
+        assert interface.state().checkable and not interface.state().checked
+        assert scene.description(button).startswith(UNLATCHED_DESCRIPTION)
+        _perform(button, action)
+        qapp.processEvents()
+        assert _held(window) and interface.state().checked
+        assert scene.description(button).startswith(LATCHED_DESCRIPTION) and HOLD_TIP in scene.description(button)
+        assert scene.name(button) == "Hold to hear original"
+        _perform(button, action)
+        qapp.processEvents()
+        assert not _held(window) and not interface.state().checked
+        assert scene.description(button).startswith(UNLATCHED_DESCRIPTION)
+    assert sent == [LATCHED_ANNOUNCEMENT, UNLATCHED_ANNOUNCEMENT]
+
+
+def _wait_until_released(window, qapp) -> None:
+    for _ in range(200):
+        qapp.processEvents()
+        if not _compare(window).held:
+            return
+        QTest.qWait(10)
+
+
+def test_a_latched_original_ends_wherever_a_hold_ends(live, qapp) -> None:
+    window = live
+    button = _find(window, "holdOriginal")
+    ends = (
+        lambda: window.eq_state.set_band_value(0, "gain_db", -4.0) or window.eq_state.flush(),
+        lambda: QCoreApplication.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate)),
+        lambda: window.engine_session._emit(AudioBorrowed("voice setup", False)),
+        lambda: window.stop_btn_action.trigger(),
+    )
+    with _AccessibleScene():
+        for end in ends:
+            if not _compare(window).enabled:
+                _start(window, qapp)
+            _perform(button, "pressAction")
+            qapp.processEvents()
+            assert _held(window)
+            end()
+            _wait_until_released(window, qapp)
+            assert not _held(window) and not _iface(button).state().checked
+            # The next activation latches again rather than only clearing a stale latch.
+            if _compare(window).enabled:
+                _perform(button, "pressAction")
+                qapp.processEvents()
+                assert _held(window)
+                _perform(button, "pressAction")
+                qapp.processEvents()
+                assert not _held(window)
+
+
+def test_holding_with_the_pointer_or_space_is_unchanged_beside_the_latch(live, qapp) -> None:
+    window = live
+    button = _find(window, "holdOriginal")
+    view = window.centralWidget()
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=_centre(button))
+    qapp.processEvents()
+    assert _held(window)
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=_centre(button))
+    qapp.processEvents()
+    assert not _held(window)
+    _focus(window, button, qapp)
+    _key(window, QEvent.Type.KeyPress, Qt.Key.Key_Space, " ")
+    assert _held(window)
+    _key(window, QEvent.Type.KeyRelease, Qt.Key.Key_Space, " ")
+    assert not _held(window)
+
+
+def test_a_disabled_button_cannot_be_latched_and_says_why(quick_window, qapp) -> None:  # noqa: F811
+    window = quick_window
+    _show(window, qapp, EQUALIZER)
+    button = _find(window, "holdOriginal")
+    with _AccessibleScene() as scene:
+        assert scene.description(button) == f"{STOPPED_REASON} {HOLD_TIP}"
+        assert _iface(button).state().disabled
+    _compare(window).press()
+    assert not _compare(window).held

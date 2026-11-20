@@ -746,7 +746,7 @@ class QuickBridge(QObject):
             )),
         ])
         # Connected after the window's and the Overview's handlers, so it reads the state they left.
-        compare = EQHoldCompare(self, w.eq_state, overview)
+        compare = EQHoldCompare(self, w.eq_state, overview, w)
         w.engine_session.changed.connect(compare.session_changed)
         w.installEventFilter(compare)
         inspector = InspectorState(self, [row["key"] for row in chain if row["card"]])

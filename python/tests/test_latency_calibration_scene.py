@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QDialog, QWidget
 
 from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog, LatencyCalibrationLoadError
 from mic_eq.ui.latency_calibration_view import NO_READINGS, LatencyCalibrationView
-from test_quick_shell import _AccessibleScene
+from test_quick_shell import _AccessibleScene, spoken_announcements
 from capture_helpers import wired_latency_dialog
 
 PROFILE = {
@@ -357,3 +357,17 @@ def test_dialog_header_esc_and_close_cancel_the_dialog(dialog, qapp, monkeypatch
     qapp.processEvents()
     assert (len(clicks), closes) == (0, [False])
     assert not again.isVisible() and again.result() == again.DialogCode.Rejected
+
+
+def test_a_new_status_is_announced_once_and_the_same_one_is_not(dialog, qapp, monkeypatch) -> None:
+    open_dialog = dialog()
+    view = open_dialog.view_model
+    spoken = spoken_announcements(monkeypatch)
+    view.set_status("Playing probe signal...")
+    view.set_progress(30)
+    view.set_status("Playing probe signal...")
+    qapp.processEvents()
+    assert spoken == ["Playing probe signal..."]
+    view.set_status("Analyzing captured signal...")
+    qapp.processEvents()
+    assert spoken[1:] == ["Analyzing captured signal..."]

@@ -102,9 +102,24 @@ Rectangle {
         easing.type: Easing.OutCubic
     }
 
+    // A caption with a `tip` is a tab stop that shows it on focus, as hovering does. A caption
+    // beside a control that shows the same help on its own focus sets `focusable: false`.
     component Caption: MutedText {
+        id: caption
         property string tip: ""
-        Hint { text: parent.tip }
+        property bool focusable: caption.tip !== ""
+        readonly property bool ringed: focusable && activeFocus
+        activeFocusOnTab: focusable
+        Hint { text: caption.tip; focused: caption.ringed }
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: -3
+            radius: 4
+            color: "transparent"
+            border.width: 2
+            border.color: root.t.focus_ring
+            visible: caption.ringed
+        }
     }
 
     // A caption that screen readers read, for text that carries a state (not a label of a control).
@@ -369,7 +384,25 @@ Rectangle {
             }
         }
         Accessible.name: proxy ? proxy.name : ""
-        Accessible.description: proxy ? proxy.toolTip : ""
+        Accessible.description: proxy ? proxy.accessibleDescription : ""
+        // Assistive technology cannot hold a button, so activating it latches the comparison
+        // on and activating it again returns; it ends wherever a hold ends.
+        function latch() {
+            const before = holding
+            if (before)
+                end()
+            else
+                begin()
+            if (holding !== before)
+                proxy.announceLatch(holding)
+        }
+        // The check state is the model's, as in ModelButton: it only tells assistive technology
+        // which voice is playing, and a click's toggle is put back.
+        checkable: true
+        checked: held
+        onCheckedChanged: if (checked !== held) checked = Qt.binding(() => hold.held)
+        Accessible.onPressAction: latch()
+        Accessible.onToggleAction: latch()
         Hint { text: hold.proxy ? hold.proxy.toolTip : "" }
         EscChip {
             id: keycap
@@ -513,6 +546,7 @@ Rectangle {
         Caption {
             text: line.row.label
             tip: line.p.toolTip
+            focusable: false
             visible: text !== "" && line.row.kind !== "toggle"
             opacity: line.p.enabled ? 1 : 0.45
             Layout.preferredWidth: 108
@@ -703,36 +737,45 @@ Rectangle {
         }
     }
 
-    // One line of the Health page. The chip text is "Title: value".
-    component HealthRow: RowLayout {
+    // One line of the Health page. The chip text is "Title: value". The line is one tab stop that
+    // reads as a whole and shows the chip's help on focus, as it does on hover.
+    component HealthRow: Control {
         id: health
         property var row
         readonly property var proxy: row.proxy
         readonly property string value: proxy.text.startsWith(row.title + ":")
                                         ? proxy.text.slice(row.title.length + 1).trim() : proxy.text
+        readonly property string shownValue: value.charAt(0).toUpperCase() + value.slice(1)
         readonly property string state_: proxy.state !== "" ? proxy.state : "idle"
-        spacing: 10
-        Rectangle {
-            implicitWidth: 8
-            implicitHeight: 8
-            radius: 4
-            color: root.t["status_" + health.state_ + "_text"] ?? root.t.status_idle_text
-        }
-        Caption {
-            text: health.row.title
-            tip: health.proxy.toolTip
-            color: root.t.text_primary
-            Layout.preferredWidth: 110
-        }
-        Text {
-            textFormat: Text.PlainText
-            text: health.value.charAt(0).toUpperCase() + health.value.slice(1)
-            color: root.t.text_primary
-            font.pixelSize: root.fsBody
-            wrapMode: Text.Wrap
-            Layout.fillWidth: true
-            Accessible.name: health.proxy.name + ": " + text
-            Accessible.description: health.proxy.toolTip
+        activeFocusOnTab: true
+        Accessible.role: Accessible.StaticText
+        Accessible.name: proxy.name + ": " + shownValue
+        Accessible.description: proxy.toolTip
+        Hint { text: health.proxy.toolTip }
+        FocusRing { control: health; outset: 3 }
+        contentItem: RowLayout {
+            spacing: 10
+            Rectangle {
+                implicitWidth: 8
+                implicitHeight: 8
+                radius: 4
+                color: root.t["status_" + health.state_ + "_text"] ?? root.t.status_idle_text
+            }
+            Caption {
+                text: health.row.title
+                color: root.t.text_primary
+                Layout.preferredWidth: 110
+                Accessible.ignored: true
+            }
+            Text {
+                textFormat: Text.PlainText
+                text: health.shownValue
+                color: root.t.text_primary
+                font.pixelSize: root.fsBody
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+                Accessible.ignored: true
+            }
         }
     }
 
@@ -765,6 +808,19 @@ Rectangle {
                 contentY = Math.max(0, top - 12)
             else if (top + item.height > contentY + height - 12)
                 contentY = Math.min(contentHeight - height, top + item.height - height + 12)
+        }
+        // Keys the focused control did not take scroll the page: Page Up and Page Down by a
+        // screen, the arrows by a few lines unless the focus is in a text field.
+        readonly property real lineStep: root.fsBody * 3
+        Keys.onPressed: event => {
+            const by = event.key === Qt.Key_PageDown ? height : event.key === Qt.Key_PageUp ? -height
+                     : event.key === Qt.Key_Down ? lineStep : event.key === Qt.Key_Up ? -lineStep : 0
+            const typing = (focusItem as TextInput) !== null || (focusItem as TextEdit) !== null
+            const shortcut = event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+            if (by === 0 || shortcut || (typing && Math.abs(by) === lineStep))
+                return
+            contentY = Math.max(0, Math.min(contentHeight - height, contentY + by))
+            event.accepted = true
         }
         ScrollBar.vertical: ScrollBar {
             id: bar
@@ -2732,7 +2788,7 @@ Rectangle {
                     }
                     Caption {
                         visible: details.open
-                        text: "Hover Drops or Recovery for the engine's raw counters, which a support report can include."
+                        text: "Point at or Tab to Drops or Recovery for the engine's raw counters, which a support report can include."
                         wrapMode: Text.Wrap
                         Layout.fillWidth: true
                     }
@@ -2951,7 +3007,7 @@ Rectangle {
                                     Chevron {
                                         anchors.verticalCenter: parent.verticalCenter
                                         color: moreButton.hovered ? root.t.hover_text : root.t.text_muted
-                                        font.pixelSize: root.fsCaption - 2
+                                        font.pixelSize: Look.fsTick
                                     }
                                 }
                             }

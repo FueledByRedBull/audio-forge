@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QDialog
 
 from mic_eq.config import BUILTIN_PRESETS
 from mic_eq.ui.command_palette import CALLERS_LINE, CALLERS_MUTED_LINE, NO_MATCH_TEXT, stage_setting
-from test_quick_accessibility import no_qml_warnings  # noqa: F401  (an autouse fixture)
+from test_quick_accessibility import _perform, no_qml_warnings  # noqa: F401  (an autouse fixture)
 from test_quick_shell import _AccessibleScene
 from test_quick_shell import quick_window as shell_window  # noqa: F401  (a fixture)
 
@@ -395,6 +395,24 @@ def test_a_click_selects_a_row_and_a_click_on_the_selected_row_runs_it(quick_win
     assert palette.shown and palette.current == 0
     assert window.limiter_state.get_settings()["enabled"] is before
     QTest.mouseClick(view, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre)
+    qapp.processEvents()
+    assert not palette.shown
+    assert window.limiter_state.get_settings()["enabled"] is (not before)
+
+
+def test_assistive_technology_can_press_a_row_to_run_it(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    palette = _palette(window)
+    before = window.limiter_state.get_settings()["enabled"]
+    palette.show_palette()
+    palette.setQuery("limiter")
+    QTest.qWait(window.quick_bridge.model["theme"]["motionPanelOpen"] + 100)
+    palette.select(1)
+    row = _delegates(window)[0]
+    assert palette.rows[0]["title"] == "Limiter" and palette.current == 1
+    with _AccessibleScene():
+        _perform(row, "pressAction")
     qapp.processEvents()
     assert not palette.shown
     assert window.limiter_state.get_settings()["enabled"] is (not before)

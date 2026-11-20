@@ -598,7 +598,7 @@ class MainWindow(QMainWindow):
     def _setup_shell_models(self) -> None:
         """Create the state the view renders; workflows own it outside the view."""
         self.shell_texts = {
-            key: TextState(self, text=spec.text, name=spec.name, tip=spec.tip, shown=spec.shown)
+            key: TextState(self, text=spec.text, name=spec.name, tip=spec.tip, shown=spec.shown, alert=spec.alert)
             for key, spec in TEXT_SPECS.items()
         }
         identity = self.configuration.identity

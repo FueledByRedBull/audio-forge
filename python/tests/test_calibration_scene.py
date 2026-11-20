@@ -25,7 +25,7 @@ from mic_eq.ui.theme import PALETTE, contrast_ratio, flatten
 from test_auto_eq_candidate_lifecycle import _Owner
 from test_setup_level_check_flow import HOT, _Session
 from test_first_run_setup import at_scene_minimum, choose, cut_short_texts, press, scene_item, scene_items, scene_text
-from test_quick_shell import _AccessibleScene
+from test_quick_shell import _AccessibleScene, spoken_announcements
 
 REJECTED = int(QDialog.DialogCode.Rejected)
 EVERYTHING = {
@@ -600,3 +600,43 @@ def test_dialog_header_esc_and_close_cancel_the_dialog(open_dialog, qapp, monkey
     qapp.processEvents()
     assert (len(clicks), closes) == (0, [False])
     assert not again.isVisible() and again.result() == REJECTED
+
+
+@pytest.mark.parametrize("reduced, label_shown", [("1", True), ("0", False)], ids=["still", "moving"])
+def test_the_progress_bar_reads_in_percent_and_says_working_when_nothing_moves(
+    open_dialog, monkeypatch, reduced, label_shown
+) -> None:
+    monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", reduced)
+    dialog = open_dialog(everything=True)
+    view = dialog.view_model
+    bar = scene_item(dialog, "progressBar")
+    with _AccessibleScene() as scene:
+        view.set_page(progress=40)
+        value = QAccessible.queryAccessibleInterface(bar).valueInterface()
+        assert (value.currentValue(), value.minimumValue(), value.maximumValue()) == (40, 0, 100)
+        assert scene.description(bar) == "40 percent"
+        label = next(c for c in bar.childItems() if c.objectName() == "workingLabel")
+        assert label.isVisible() is False
+        view.set_page(progressBusy=True)
+        assert scene.description(bar) == "Working"
+        assert label.isVisible() is label_shown and label.property("text") == "Working"
+        view.set_page(progressBusy=False)
+        assert label.isVisible() is False
+
+
+def test_a_new_step_and_status_are_announced_once_and_a_tick_is_not(open_dialog, qapp, monkeypatch) -> None:
+    dialog = open_dialog()
+    view = dialog.view_model
+    spoken = spoken_announcements(monkeypatch)
+    view.set_page(recordingTitle="Review", timeText="Time remaining: 9s", progress=10)
+    view.set_warning("Check the curve before you keep it.", state="ok", strong=True)
+    qapp.processEvents()
+    assert spoken == ["Review. Check the curve before you keep it."]
+    for seconds in range(8, 3, -1):
+        view.set_page(timeText=f"Time remaining: {seconds}s", progress=100 - seconds * 10)
+        view.set_warning("Check the curve before you keep it.", state="ok", strong=True)
+        qapp.processEvents()
+    assert len(spoken) == 1
+    view.set_warning("The take was too quiet. Record it again.", state="bad", strong=True)
+    qapp.processEvents()
+    assert spoken[1:] == ["The take was too quiet. Record it again."]

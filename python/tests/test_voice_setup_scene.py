@@ -26,7 +26,7 @@ from mic_eq.ui.voice_setup_flow import VoiceSetupFlow
 from mic_eq.ui.voice_setup_view import DYNAMICS, DYNAMICS_KEYS, VoiceSetupView
 from test_auto_eq_candidate_lifecycle import _Owner
 from test_first_run_setup import at_scene_minimum, choose, cut_short_texts, press, scene_item, scene_items, scene_text
-from test_quick_shell import _AccessibleScene
+from test_quick_shell import _AccessibleScene, spoken_announcements
 from test_setup_level_check_flow import HOT, _Session
 
 REJECTED = int(QDialog.DialogCode.Rejected)
@@ -129,9 +129,9 @@ def test_the_scene_loads_and_every_control_has_its_accessible_name(open_dialog) 
         "contentScroll": "Auto Voice Setup page",
         "curvePicker": f"Tone preset: {FIRST_CURVE.name}",
         "dynamicsPicker": "Compression: Balanced",
-        "p95Number": "Typical compressor evening-out in decibels: 3.50 dB",
-        "peakNumber": "Strongest compressor squeeze allowed in decibels: 8.00 dB",
-        "lufsNumber": "Voice setup target loudness: -18.00 LUFS",
+        "p95Number": "Typical compressor evening-out in decibels",
+        "peakNumber": "Strongest compressor squeeze allowed in decibels",
+        "lufsNumber": "Voice setup target loudness",
         "mutedNotice": LIVE_OUTPUT_MUTED_NOTICE,
         "progressBar": "Voice Setup progress",
         "levelMeter": "Voice Setup input level",
@@ -163,8 +163,13 @@ def test_the_scene_loads_and_every_control_has_its_accessible_name(open_dialog) 
             assert QAccessible.queryAccessibleInterface(scene_item(dialog, key)).role() == QAccessible.Role.Grouping
         meter = QAccessible.queryAccessibleInterface(scene_item(dialog, "levelMeter"))
         assert meter.role() == QAccessible.Role.ProgressBar
-        for key in ("p95Number", "peakNumber", "lufsNumber"):
-            assert QAccessible.queryAccessibleInterface(scene_item(dialog, key)).role() == QAccessible.Role.SpinBox
+        # A spin box counts in 10^decimals, so these read as text in real units instead.
+        shown = {"p95Number": "3.50 dB", "peakNumber": "8.00 dB", "lufsNumber": "-18.00 LUFS"}
+        for key, text in shown.items():
+            box = QAccessible.queryAccessibleInterface(scene_item(dialog, key))
+            assert box.role() == QAccessible.Role.EditableText
+            assert box.valueInterface() is None
+            assert box.text(QAccessible.Text.Value) == text
     assert {scene_text(dialog, key) for key in BUTTONS} == {
         "Cancel", "Retake", "Compare Recording", "Continue Anyway", "Start Voice Setup"
     }
@@ -412,8 +417,9 @@ def test_a_number_is_stepped_from_the_keyboard_typed_and_held_in_its_range(open_
     qapp.processEvents()
     assert view.number("peak") == 6.25
     assert scene_item(dialog, "peakNumber").property("value") == 625
-    with _AccessibleScene() as scene:
-        assert scene.name(scene_item(dialog, "peakNumber")).endswith("6.25 dB")
+    with _AccessibleScene():
+        peak = QAccessible.queryAccessibleInterface(scene_item(dialog, "peakNumber"))
+        assert peak.text(QAccessible.Text.Value) == "6.25 dB"
     # The target loudness is held between -24 and -12 LUFS.
     view.setNumber("lufs", -40.0)
     assert view.number("lufs") == -24.0
@@ -929,3 +935,31 @@ def test_the_dialog_asks_the_advisory_question_with_no_as_the_default(monkeypatc
     assert (title, text) == ("Apply Suggested Settings?", "Apply them?")
     assert buttons == QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
     assert default == QMessageBox.StandardButton.No
+
+
+def test_a_new_phase_and_status_are_announced_once_and_a_tick_is_not(open_dialog, qapp, monkeypatch) -> None:
+    dialog = open_dialog()
+    view = dialog.flow.view_model
+    spoken = spoken_announcements(monkeypatch)
+    view.set_page(phaseText="Capturing speech", timeText="Time remaining: 9s", progress=10)
+    view.set_warning("Move a little closer to the microphone.", state="warn", strong=True)
+    qapp.processEvents()
+    # One announcement for the turn, the phase first.
+    assert spoken == ["Capturing speech. Move a little closer to the microphone."]
+    for seconds in range(8, 3, -1):
+        view.set_page(timeText=f"Time remaining: {seconds}s", progress=100 - seconds * 10)
+        view.set_page(phaseText="Capturing speech")
+        view.set_warning("Move a little closer to the microphone.", state="warn", strong=True)
+        qapp.processEvents()
+    assert len(spoken) == 1
+    # A refused take is said when it arrives.
+    view.set_warning("That take was too quiet. Record it again.", state="bad", strong=True)
+    qapp.processEvents()
+    assert spoken[1:] == ["That take was too quiet. Record it again."]
+
+
+def test_a_dialog_opens_without_announcing_what_it_starts_with(open_dialog, qapp, monkeypatch) -> None:
+    spoken = spoken_announcements(monkeypatch)
+    dialog = open_dialog()
+    qapp.processEvents()
+    assert spoken == [] and dialog.flow.view_model.shown["phaseText"]

@@ -1563,6 +1563,20 @@ class _AccessibleScene:
         return self._accessible.queryAccessibleInterface(item).text(self._accessible.Text.Description)
 
 
+def spoken_announcements(monkeypatch) -> list[str]:
+    """What is announced to assistive technology from now on, as the messages in order."""
+    from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent
+
+    sent: list[str] = []
+    def record(event) -> None:
+        if isinstance(event, QAccessibleAnnouncementEvent):
+            sent.append(event.message())
+
+    monkeypatch.setattr(QAccessible, "isActive", staticmethod(lambda: True))
+    monkeypatch.setattr(QAccessible, "updateAccessibility", staticmethod(record))
+    return sent
+
+
 def _tab_stops(window, qapp, presses: int = 120) -> list:
     """The items that real Tab presses focus in turn, wrapping around."""
     window.resize(1400, 900)

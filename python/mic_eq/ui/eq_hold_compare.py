@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from PySide6.QtCore import QEvent, QObject, Property, Qt, Signal, Slot
 
+from .announcements import announce
 from .engine_session import (
     AudioBorrowed,
     BackgroundStopFailed,
@@ -37,6 +38,12 @@ HOLD_TIP = (
     "without the equalizer. Callers hear the original too."
 )
 PILL_TEXT = f"Hearing your original voice {DOT} callers hear it too {DOT} release to return"
+# For assistive technology, where holding is not possible: activating the button latches the
+# comparison on, and activating it again returns.
+LATCHED_DESCRIPTION = "You are hearing your original voice. Activate to return to your processed voice."
+UNLATCHED_DESCRIPTION = "Activate to hear your original voice, and again to return to your processed voice."
+LATCHED_ANNOUNCEMENT = "Hearing your original voice. Callers hear it too."
+UNLATCHED_ANNOUNCEMENT = "Back to your processed voice."
 STOPPED_REASON = "Start processing to compare with your original voice."
 EQ_OFF_REASON = "The equalizer is off, so you already hear your original voice."
 DEVICE_LOST_REASON = "The audio device is not responding."
@@ -65,10 +72,13 @@ class EQHoldCompare(QObject):
         parent: QObject,
         state: EQState,
         overview: OverviewState,
+        window: QObject,
     ) -> None:
         super().__init__(parent)
         self._state = state
         self._overview = overview
+        # What a latched hold announces itself from.
+        self._window = window
         self._view = self._read()
         state.changed.connect(self.refresh)
         state.originalHeldChanged.connect(self.refresh)
@@ -91,6 +101,13 @@ class EQHoldCompare(QObject):
     toolTip = Property(
         str, lambda self: f"{self._view.reason} {HOLD_TIP}" if self._view.reason else HOLD_TIP, notify=changed
     )
+    accessibleDescription = Property(
+        str,
+        lambda self: self.toolTip
+        if self._view.reason
+        else f"{LATCHED_DESCRIPTION if self._view.held else UNLATCHED_DESCRIPTION} {HOLD_TIP}",
+        notify=changed,
+    )
     text = Property(str, lambda self: HOLD_LABEL, constant=True)
     shortText = Property(str, lambda self: HOLD_SHORT, constant=True)
     name = Property(str, lambda self: HOLD_LABEL, constant=True)
@@ -106,6 +123,11 @@ class EQHoldCompare(QObject):
     @Slot()
     def release(self) -> None:
         self._state.release_original()
+
+    @Slot(bool)
+    def announceLatch(self, latched: bool) -> None:
+        """Say what an assistive technology's activation did; a held button needs no words."""
+        announce(self._window, LATCHED_ANNOUNCEMENT if latched else UNLATCHED_ANNOUNCEMENT)
 
     @Slot()
     def refresh(self) -> None:

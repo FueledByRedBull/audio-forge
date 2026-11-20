@@ -304,7 +304,7 @@ impl AudioProcessor {
         self.ensure_vad_worker(streams, vad_worker_consumer);
         let (input_spectrum_queue, input_spectrum_consumer) =
             AudioRingBuffer::new(INPUT_SPECTRUM_QUEUE_SAMPLES).split();
-        self.start_input_spectrum_worker(streams, input_spectrum_consumer)?;
+        self.start_input_spectrum_worker(streams, input_spectrum_consumer);
 
         let (suppressor_rx, retired_suppressor_tx) = self.shared.suppressor.open_queues();
         let (suppressor_initial_control, suppressor_initial_engine) = self.initial_suppressor();

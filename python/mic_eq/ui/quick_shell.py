@@ -856,7 +856,7 @@ class QuickBridge(QObject):
                     for view in GRAPH_VIEWS
                 ],
                 # Drawn behind every view while the stream runs; the page adds it to the view's legend.
-                "analyserLegend": {"text": ANALYSER_LEGEND[0], "lineStyle": ANALYSER_LEGEND[1]},
+                "analyserLegend": ANALYSER_LEGEND,
             },
             "stages": stages,
             # The row of window shortcuts on the Overview, read from the actions themselves.

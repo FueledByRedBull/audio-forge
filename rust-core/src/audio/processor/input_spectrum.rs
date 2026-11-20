@@ -32,6 +32,8 @@ const HANN_NOISE_BANDWIDTH_BINS: f32 = 1.5;
 /// Queue between the DSP loop and the worker: two of the largest blocks the
 /// loop hands on (about 340 ms at 48 kHz).
 pub(super) const INPUT_SPECTRUM_QUEUE_SAMPLES: usize = 2 * RT_PROCESS_BUFFER_CAPACITY;
+/// Input samples are clamped to this magnitude, well above full scale.
+const MAX_INPUT_MAGNITUDE: f32 = 16.0;
 /// How long the worker sleeps when the queue is empty.
 const WORKER_IDLE_SLEEP: Duration = Duration::from_millis(5);
 
@@ -139,8 +141,14 @@ impl SpectrumAnalyser {
             let take = samples.len().min(HOP - self.filled);
             let at = FFT_SIZE - HOP + self.filled;
             for (slot, &sample) in self.history[at..at + take].iter_mut().zip(samples) {
-                // The tap sits before the loop's sanitizer.
-                *slot = if sample.is_finite() { sample } else { 0.0 };
+                // The tap sits before the loop's sanitizer. A finite but huge
+                // sample would overflow the mean and the FFT and read as
+                // silence; clamped, a clipping input reads as loud.
+                *slot = if sample.is_finite() {
+                    sample.clamp(-MAX_INPUT_MAGNITUDE, MAX_INPUT_MAGNITUDE)
+                } else {
+                    0.0
+                };
             }
             self.filled += take;
             samples = &samples[take..];
@@ -176,14 +184,9 @@ impl SpectrumAnalyser {
         {
             *input = (sample - mean) * weight;
         }
-        if self
-            .fft
+        self.fft
             .process_with_scratch(&mut self.fft_input, &mut self.fft_output, &mut self.scratch)
-            .is_err()
-        {
-            // Only a length mismatch fails, and `new` sized every buffer from the plan.
-            return;
-        }
+            .expect("only a length mismatch fails, and `new` sized every buffer from the plan");
         for (power, bin) in self.power.iter_mut().zip(&self.fft_output) {
             *power = bin.norm_sqr() * self.power_scale;
         }
@@ -228,7 +231,23 @@ impl InputSpectrumShared {
     }
 }
 
+/// Run the worker until it is stopped. A panic ends it, clears the display
+/// and is reported through `worker_failed`; the audio goes on.
 fn run_input_spectrum_worker(
+    spectrum: &InputSpectrumShared,
+    consumer: AudioConsumer,
+    sample_rate: u32,
+) {
+    let analysed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        analyse_input_spectrum(spectrum, consumer, sample_rate)
+    }));
+    if analysed.is_err() {
+        spectrum.worker_failed.store(true, Ordering::Release);
+        spectrum.clear();
+    }
+}
+
+fn analyse_input_spectrum(
     spectrum: &InputSpectrumShared,
     mut consumer: AudioConsumer,
     sample_rate: u32,
@@ -236,6 +255,10 @@ fn run_input_spectrum_worker(
     let mut analyser = SpectrumAnalyser::new(sample_rate);
     let mut chunk = vec![0.0_f32; HOP];
     while spectrum.worker_running.load(Ordering::Acquire) {
+        #[cfg(test)]
+        if spectrum.inject_worker_panic.load(Ordering::Acquire) {
+            panic!("injected input analyser failure");
+        }
         let read = consumer.read(&mut chunk);
         if read == 0 {
             std::thread::sleep(WORKER_IDLE_SLEEP);
@@ -246,23 +269,43 @@ fn run_input_spectrum_worker(
 }
 
 impl AudioProcessor {
-    /// Start the analyser worker on the queue the DSP loop feeds.
+    /// Start the analyser worker on the queue the DSP loop feeds. It only
+    /// feeds the display, so a failed spawn does not stop the audio: it is
+    /// reported through `worker_failed`, and the tap counts every block it
+    /// then drops.
     pub(super) fn start_input_spectrum_worker(
         &self,
         streams: &mut Streams,
         consumer: AudioConsumer,
-    ) -> Result<(), String> {
+    ) {
+        let spectrum = &self.shared.input_spectrum;
+        spectrum.worker_running.store(true, Ordering::Release);
+        match self.spawn_input_spectrum_worker(consumer) {
+            Ok(handle) => streams.input_spectrum_thread = Some(handle),
+            Err(_) => {
+                spectrum.worker_running.store(false, Ordering::Release);
+                spectrum.worker_failed.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    fn spawn_input_spectrum_worker(
+        &self,
+        consumer: AudioConsumer,
+    ) -> std::io::Result<std::thread::JoinHandle<()>> {
+        #[cfg(test)]
+        if self
+            .shared
+            .input_spectrum
+            .inject_spawn_failure
+            .load(Ordering::Acquire)
+        {
+            return Err(std::io::Error::other("injected spawn failure"));
+        }
         let shared = Arc::clone(&self.shared);
         let sample_rate = self.sample_rate;
-        shared
-            .input_spectrum
-            .worker_running
-            .store(true, Ordering::Release);
-        let handle = std::thread::Builder::new()
+        std::thread::Builder::new()
             .spawn(move || run_input_spectrum_worker(&shared.input_spectrum, consumer, sample_rate))
-            .map_err(|e| format!("Failed to spawn input analyser thread: {e}"))?;
-        streams.input_spectrum_thread = Some(handle);
-        Ok(())
     }
 
     /// Stop the analyser worker and wait for it to exit.
@@ -272,9 +315,23 @@ impl AudioProcessor {
             .worker_running
             .store(false, Ordering::Release);
         if let Some(handle) = streams.input_spectrum_thread.take() {
-            // A panicked worker only loses the display; the stop goes on.
-            let _ = handle.join();
+            // The worker catches its own panics; one that still escapes only
+            // loses the display, so it is reported and the stop goes on.
+            if handle.join().is_err() {
+                self.shared
+                    .input_spectrum
+                    .worker_failed
+                    .store(true, Ordering::Release);
+            }
         }
+    }
+
+    /// The analyser worker could not start, or panicked, this run.
+    pub fn get_input_spectrum_worker_failed(&self) -> bool {
+        self.shared
+            .input_spectrum
+            .worker_failed
+            .load(Ordering::Acquire)
     }
 
     /// Copy the latest input spectrum (dBFS per band, see
@@ -527,9 +584,8 @@ mod tests {
         let mut bands = [0.0_f32; INPUT_SPECTRUM_BIN_COUNT];
         assert_eq!(processor.read_input_spectrum(&mut bands), 0);
         let mut streams = Streams::default();
-        processor
-            .start_input_spectrum_worker(&mut streams, consumer)
-            .unwrap();
+        processor.start_input_spectrum_worker(&mut streams, consumer);
+        assert!(!processor.get_input_spectrum_worker_failed());
         let tone = sine(48_000, 1_000.0, 0.5, 4 * FFT_SIZE);
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut fed = 0;
@@ -557,5 +613,78 @@ mod tests {
         producer.write(&tone);
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(processor.read_input_spectrum(&mut bands), 0);
+    }
+
+    #[test]
+    fn a_huge_finite_input_reads_as_loud_not_as_silence() {
+        // A broken driver's samples near f32::MAX would overflow the mean
+        // and the FFT unclamped.
+        let samples = sine(48_000, 1_000.0, f32::MAX * 0.9, 48_000);
+        let bands = last_frame(48_000, &samples);
+        assert!(bands.iter().all(|band| band.is_finite()));
+        assert_eq!(bands[band_of(1_000.0)], CEILING_DB);
+    }
+
+    #[test]
+    fn a_panicking_worker_is_reported_and_clears_the_display() {
+        let processor = AudioProcessor::new();
+        let (mut producer, consumer) = AudioRingBuffer::new(INPUT_SPECTRUM_QUEUE_SAMPLES).split();
+        let mut streams = Streams::default();
+        processor.start_input_spectrum_worker(&mut streams, consumer);
+        let mut bands = [0.0_f32; INPUT_SPECTRUM_BIN_COUNT];
+        let tone = sine(48_000, 1_000.0, 0.5, 4 * FFT_SIZE);
+        producer.write(&tone);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while processor.read_input_spectrum(&mut bands) == 0 {
+            assert!(std::time::Instant::now() < deadline, "no frames published");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!processor.get_input_spectrum_worker_failed());
+
+        processor
+            .shared
+            .input_spectrum
+            .inject_worker_panic
+            .store(true, Ordering::Release);
+        while !processor.get_input_spectrum_worker_failed() {
+            assert!(std::time::Instant::now() < deadline, "panic not reported");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(processor.read_input_spectrum(&mut bands), 0);
+        assert!(bands.iter().all(|&band| band == INPUT_SPECTRUM_FLOOR_DB));
+        // The stop still joins the worker, and the next run starts clean.
+        processor.stop_input_spectrum_worker(&mut streams);
+        assert!(streams.input_spectrum_thread.is_none());
+        assert!(processor.get_input_spectrum_worker_failed());
+        processor.shared.reset_for_start();
+        assert!(!processor.get_input_spectrum_worker_failed());
+    }
+
+    #[test]
+    fn a_failed_spawn_is_reported_and_the_tap_counts_its_drops() {
+        let processor = AudioProcessor::new();
+        processor
+            .shared
+            .input_spectrum
+            .inject_spawn_failure
+            .store(true, Ordering::Release);
+        let (mut producer, consumer) = AudioRingBuffer::new(INPUT_SPECTRUM_QUEUE_SAMPLES).split();
+        let mut streams = Streams::default();
+        processor.start_input_spectrum_worker(&mut streams, consumer);
+        assert!(streams.input_spectrum_thread.is_none());
+        assert!(processor.get_input_spectrum_worker_failed());
+        assert!(!processor
+            .shared
+            .input_spectrum
+            .worker_running
+            .load(Ordering::Acquire));
+
+        let dropped = &processor.shared.input_spectrum.dropped_blocks;
+        let block = [0.5_f32; 480];
+        for _ in 0..INPUT_SPECTRUM_QUEUE_SAMPLES / block.len() + 4 {
+            enqueue_input_spectrum_block(&mut producer, &block, dropped);
+        }
+        assert!(processor.get_input_spectrum_dropped_blocks() >= 4);
+        processor.stop_input_spectrum_worker(&mut streams);
     }
 }

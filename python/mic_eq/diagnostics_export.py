@@ -219,6 +219,7 @@ _RUNTIME_BOOLS = frozenset(
         "input_cleanup_rumble_detected",
         "input_phase_polarity_flipped",
         "input_resampler_active",
+        "input_spectrum_worker_failed",
         "limiter_careful_output_enabled",
         "noise_backend_available",
         "noise_backend_failed",

@@ -87,6 +87,17 @@ def test_the_analyser_scale_puts_minus_90_at_the_floor_and_minus_18_at_the_zero_
     assert geometry.analyser_to_y(60.0, WIDTH, HEIGHT) == pytest.approx(geometry.MARGIN_TOP)
 
 
+def test_the_analyser_zero_line_follows_the_0_db_line_on_an_uneven_axis() -> None:
+    # An axis that reaches further down than up puts the 0 dB line above the plot's middle.
+    class Uneven(EQGraphGeometry):
+        DISPLAY_DB_MIN = -24.0
+        DISPLAY_DB_MAX = 12.0
+
+    floor = Uneven.MARGIN_TOP + Uneven.plot_size(WIDTH, HEIGHT)[1]
+    assert Uneven.analyser_to_y(-18.0, WIDTH, HEIGHT) == pytest.approx(Uneven.gain_to_y(0.0, WIDTH, HEIGHT))
+    assert Uneven.analyser_to_y(-90.0, WIDTH, HEIGHT) == pytest.approx(floor)
+
+
 # The painter
 
 
@@ -185,7 +196,7 @@ def test_the_poll_reuses_one_buffer_and_repaints_only_for_a_new_frame(qapp) -> N
     assert list(model.input_spectrum_hz) == list(FREQUENCIES)
 
 
-def test_no_frame_or_an_unreadable_engine_clears_the_spectrum(qapp) -> None:
+def test_no_frame_or_a_native_panic_clears_the_spectrum(qapp) -> None:
     model = EQGraphModel()
     analyser, engine = InputAnalyser(model), FakeEngine()
     analyser.poll(engine)
@@ -198,11 +209,20 @@ def test_no_frame_or_an_unreadable_engine_clears_the_spectrum(qapp) -> None:
     engine.sequence = 1
     analyser.poll(engine)
     assert model.input_spectrum_db is not None, "the same frame number shows again after a clear"
-    engine.failure = RuntimeError("engine gone")
+    engine.failure = RuntimeError("internal error: the native audio core panicked")
     analyser.poll(engine)
     assert model.input_spectrum_db is None
-    analyser.poll(object())  # an engine built without the analyser
-    assert model.input_spectrum_db is None
+
+
+@pytest.mark.parametrize("failure", [AttributeError("stale native module"), OSError("unexpected")])
+def test_an_engine_error_other_than_a_native_panic_is_not_hidden(qapp, failure) -> None:
+    analyser, engine = InputAnalyser(EQGraphModel()), FakeEngine()
+    engine.failure = failure
+    with pytest.raises(type(failure)):
+        analyser.poll(engine)
+    # An engine built without the analyser (a stale .pyd) fails loudly too.
+    with pytest.raises(AttributeError):
+        InputAnalyser(EQGraphModel()).poll(object())
 
 
 class RunningProcessor:
@@ -289,6 +309,27 @@ def test_the_window_does_not_read_when_the_stream_is_stopped_and_clears_the_spec
     for _ in range(6):
         window._update_meters()
     assert engine.reads == reads and graph.input_spectrum_db is None
+
+
+def test_the_window_does_not_read_in_the_compact_call_window_and_clears_what_was_shown(window_with_engine, qapp) -> None:
+    window, engine = window_with_engine
+    graph = window.eq_presentation.graph_model
+    for _ in range(2):
+        window._update_meters()
+    assert graph.input_spectrum_db is not None
+    reads = engine.reads
+
+    window.compact_window_action.trigger()
+    qapp.processEvents()
+    try:
+        assert window.compact_window is not None and window.compact_window.isVisible()
+        assert not window.isVisible()
+        for _ in range(6):
+            window._update_meters()
+        assert engine.reads == reads and graph.input_spectrum_db is None
+    finally:
+        window.close_compact_window()
+        qapp.processEvents()
 
 
 def test_the_window_does_not_read_while_minimized(window_with_engine) -> None:

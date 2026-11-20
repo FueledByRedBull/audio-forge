@@ -104,3 +104,8 @@ def test_the_input_analyser_drop_count_is_read_and_defaults_to_none_dropped():
     assert snapshot.reported("input_spectrum_dropped_blocks") == 7
     wrong = RuntimeSnapshot.parse({"input_spectrum_dropped_blocks": "7"})
     assert wrong.input_spectrum_dropped_blocks == 0 and wrong.reported("input_spectrum_dropped_blocks") is None
+
+
+def test_the_input_analyser_worker_failure_is_read_and_defaults_to_working():
+    assert RuntimeSnapshot.parse({}).input_spectrum_worker_failed is False
+    assert RuntimeSnapshot.parse({"input_spectrum_worker_failed": True}).input_spectrum_worker_failed is True

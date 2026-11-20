@@ -2838,6 +2838,10 @@ impl PyAudioProcessor {
                 self.processor.get_input_spectrum_dropped_blocks(),
             )?;
             diagnostics.set_item(
+                "input_spectrum_worker_failed",
+                self.processor.get_input_spectrum_worker_failed(),
+            )?;
+            diagnostics.set_item(
                 "lock_contention_count",
                 self.processor.get_lock_contention_count(),
             )?;

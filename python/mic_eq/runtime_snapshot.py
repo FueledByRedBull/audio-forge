@@ -33,6 +33,7 @@ class RuntimeSnapshot:
     noise_backend_error: str | None = None
     noise_selection_dropped_count: float = 0
     input_spectrum_dropped_blocks: float = 0
+    input_spectrum_worker_failed: bool = False
     suppressor_non_finite_count: float = 0
     downstream_non_finite_count: float | None = None
     # Stream health and recovery

@@ -803,3 +803,7 @@ def test_a_stalled_input_analyser_shows_in_the_export() -> None:
     # A count the engine did not send is left out, and a bad one is exported as null.
     assert "input_spectrum_dropped_blocks" not in _exported_runtime(_runtime())
     assert _exported_runtime({**_runtime(), "input_spectrum_dropped_blocks": "many"})["input_spectrum_dropped_blocks"] is None
+
+
+def test_a_failed_input_analyser_worker_shows_in_the_export() -> None:
+    assert _exported_runtime({**_runtime(), "input_spectrum_worker_failed": True})["input_spectrum_worker_failed"] is True

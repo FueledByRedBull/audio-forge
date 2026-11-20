@@ -56,7 +56,7 @@ class GraphView:
 
 HIGH_PASS_LEGEND = (f"High-pass {PREFILTER_HIGHPASS_HZ} Hz", "dotted")
 # Drawn behind every view while the stream runs, so no view lists it; the legend adds it.
-ANALYSER_LEGEND = ("Input analyser", "fill")
+ANALYSER_LEGEND = {"text": "Input analyser", "lineStyle": "fill"}
 # What the graph shows: everything the signal gets, the user's bands, or the Auto-EQ layer.
 GRAPH_VIEWS = (
     GraphView(
@@ -209,7 +209,8 @@ class EQGraphGeometry:
     def analyser_to_y(cls, level_dbfs: float, width: float, height: float) -> float:
         """Where the input analyser draws ``level_dbfs``, between the plot's top and floor."""
         _plot_width, plot_height = cls.plot_size(width, height)
-        zero_line = cls.DISPLAY_DB_MAX / (cls.DISPLAY_DB_MAX - cls.DISPLAY_DB_MIN)
+        # How far up from the floor the 0 dB line sits, as a fraction of the plot's height.
+        zero_line = -cls.DISPLAY_DB_MIN / (cls.DISPLAY_DB_MAX - cls.DISPLAY_DB_MIN)
         rise = (float(level_dbfs) - cls.ANALYSER_FLOOR_DBFS) / (
             cls.ANALYSER_ZERO_LINE_DBFS - cls.ANALYSER_FLOOR_DBFS
         )
@@ -906,7 +907,8 @@ class EQGraphRenderer:
     FILL_ALPHA = 18
     AXIS_TOLERANCE_DB = 0.3
     # The input analyser's area is strongest at its top edge and almost gone at the plot's floor.
-    ANALYSER_FILL_ALPHA = (107, 8)
+    ANALYSER_FILL_TOP_ALPHA = 107
+    ANALYSER_FILL_FLOOR_ALPHA = 8
     ANALYSER_LINE_WIDTH = 1.2
     CASING_WIDTH = 3.0
     MUTED_OPACITY = 0.4
@@ -1290,9 +1292,8 @@ class EQGraphRenderer:
         points = [QPointF(plot.left(), points[0].y()), *points, QPointF(plot.right(), points[-1].y())]
         crest = min(point.y() for point in points)
         fill = QLinearGradient(0.0, crest, 0.0, plot.bottom())
-        top_alpha, bottom_alpha = cls.ANALYSER_FILL_ALPHA
-        fill.setColorAt(0.0, qcolor(PALETTE.analyser_fill, alpha=top_alpha))
-        fill.setColorAt(1.0, qcolor(PALETTE.analyser_fill, alpha=bottom_alpha))
+        fill.setColorAt(0.0, qcolor(PALETTE.analyser_fill, alpha=cls.ANALYSER_FILL_TOP_ALPHA))
+        fill.setColorAt(1.0, qcolor(PALETTE.analyser_fill, alpha=cls.ANALYSER_FILL_FLOOR_ALPHA))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fill)
         painter.drawPolygon(

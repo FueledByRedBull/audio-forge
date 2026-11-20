@@ -22,7 +22,11 @@ class InputAnalyser:
         self._sequence = 0
 
     def poll(self, processor) -> None:
-        """Take the latest spectrum; with none to show, or none readable, clear the graph's."""
+        """Take the latest spectrum; with none to show, or a native panic reading it, clear the graph's.
+
+        The engine's calls turn a panic into a RuntimeError. Anything else, such as
+        a missing method on a stale native module, is a bug and propagates.
+        """
         try:
             if self._levels is None or self._frequencies is None:
                 bands = int(processor.input_spectrum_bin_count())
@@ -30,7 +34,7 @@ class InputAnalyser:
                 processor.input_spectrum_bin_frequencies(frequencies)
                 self._levels, self._frequencies = np.zeros(bands, dtype=np.float32), frequencies
             sequence = processor.read_input_spectrum(self._levels)
-        except (AttributeError, OSError, RuntimeError):
+        except RuntimeError:
             self.clear()
             return
         if sequence == 0:  # no frame yet, or the stream is stopped

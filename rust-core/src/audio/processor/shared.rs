@@ -385,8 +385,16 @@ pub(super) struct InputSpectrumShared {
     pub(super) has_frame: AtomicBool,
     /// Input blocks dropped because the worker's queue was full.
     pub(super) dropped_blocks: AtomicU64,
+    /// The worker could not start, or panicked, this run: no spectrum until
+    /// the next start.
+    pub(super) worker_failed: AtomicBool,
     /// Cleared to stop the worker.
     pub(super) worker_running: AtomicBool,
+    /// Test hooks: make the worker panic, or its spawn fail.
+    #[cfg(test)]
+    pub(super) inject_worker_panic: AtomicBool,
+    #[cfg(test)]
+    pub(super) inject_spawn_failure: AtomicBool,
 }
 
 /// Voice-activity worker results and health.
@@ -705,7 +713,12 @@ impl Shared {
                 sequence: AtomicU64::new(0),
                 has_frame: AtomicBool::new(false),
                 dropped_blocks: AtomicU64::new(0),
+                worker_failed: AtomicBool::new(false),
                 worker_running: AtomicBool::new(false),
+                #[cfg(test)]
+                inject_worker_panic: AtomicBool::new(false),
+                #[cfg(test)]
+                inject_spawn_failure: AtomicBool::new(false),
             },
             vad: VadShared {
                 raw_probability: AtomicU32::new(0.0_f32.to_bits()),
@@ -942,6 +955,9 @@ impl Shared {
         self.input_spectrum
             .dropped_blocks
             .store(0, Ordering::Relaxed);
+        self.input_spectrum
+            .worker_failed
+            .store(false, Ordering::Relaxed);
         self.input
             .stereo_correlation
             .store(1.0_f32.to_bits(), Ordering::Relaxed);

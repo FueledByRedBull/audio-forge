@@ -559,6 +559,27 @@ def test_the_eq_graph_is_named_described_and_follows_the_selected_band(quick_win
         assert "Band 3 selected" not in scene.description(graph)
 
 
+def test_the_eq_graph_says_the_input_analyser_shows_only_while_it_does(quick_window, qapp) -> None:
+    import numpy as np
+
+    from mic_eq.ui.eq_graph import ANALYSER_DESCRIPTION
+
+    window = quick_window
+    _show(window, qapp, EQUALIZER)
+    graph = _graph_item(window.centralWidget().rootObject())
+    model = window.eq_presentation.graph_model
+    with _AccessibleScene() as scene:
+        assert ANALYSER_DESCRIPTION not in scene.description(graph)
+        model.set_input_spectrum(
+            np.full(2, -40.0, dtype=np.float32), np.array([100.0, 1000.0], dtype=np.float32)
+        )
+        qapp.processEvents()
+        assert ANALYSER_DESCRIPTION in scene.description(graph)
+        model.clear_input_spectrum()
+        qapp.processEvents()
+        assert ANALYSER_DESCRIPTION not in scene.description(graph)
+
+
 # --- 3. Keyboard -------------------------------------------------------------------
 
 

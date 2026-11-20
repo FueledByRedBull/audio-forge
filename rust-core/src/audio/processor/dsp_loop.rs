@@ -2379,6 +2379,7 @@ fn smooth_buffer(alpha: f32, raw: u32, prev_smoothed: u32) -> u32 {
     (alpha * raw_f + (1.0 - alpha) * prev_f) as u32
 }
 
+// RT_REGION_START: dsp_input_spectrum_tap
 /// Queue a block for the input analyser. It takes the samples read-only, so
 /// the audio path cannot change; a block that does not fit is dropped whole
 /// and counted, never waited for.
@@ -2394,6 +2395,7 @@ pub(super) fn enqueue_input_spectrum_block(
     }
     producer.write(samples);
 }
+// RT_REGION_END: dsp_input_spectrum_tap
 
 /// Queue a block for the VAD worker. A block that does not fit is dropped
 /// whole and the gap published, so the model never sees a bridged hole.

@@ -6546,6 +6546,7 @@ fn test_marked_rt_regions_reject_blocking_or_allocating_apis() {
                 "dsp_downstream_chain",
                 "dsp_output_writer",
                 "dsp_processing_loop",
+                "dsp_input_spectrum_tap",
             ][..],
         ),
         (

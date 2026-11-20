@@ -90,3 +90,7 @@ def test_another_length_a_strided_or_a_read_only_array_is_a_value_error(processo
 
 def test_the_dropped_block_count_is_in_the_runtime_diagnostics(processor):
     assert processor.get_runtime_diagnostics()["input_spectrum_dropped_blocks"] == 0
+
+
+def test_the_worker_failure_flag_is_in_the_runtime_diagnostics(processor):
+    assert processor.get_runtime_diagnostics()["input_spectrum_worker_failed"] is False

@@ -160,6 +160,8 @@ Item {
                     required property var modelData
                     required property int index
                     readonly property bool selected: index === overlay.commands.current
+                    // The selected fill is the highlight under a contrast theme: all its text is the highlighted text.
+                    readonly property bool plainInk: selected && Look.t.highContrast
                     width: ListView.view.width
                     height: Math.max(44, texts.implicitHeight + 12)
                     radius: Look.t.radiusControl
@@ -192,7 +194,8 @@ Item {
                             text: row.modelData.title
                             textFormat: Text.PlainText
                             elide: Text.ElideRight
-                            color: !row.enabled ? (row.selected ? Look.t.text_muted : Look.t.action_disabled_text)
+                            color: row.plainInk ? Look.t.hover_text
+                                : !row.enabled ? (row.selected ? Look.t.text_muted : Look.t.action_disabled_text)
                                 : row.selected ? Look.t.hover_text : Look.t.text_primary
                             font.pixelSize: Look.fsBody
                             Accessible.ignored: true
@@ -205,7 +208,7 @@ Item {
                                 text: row.modelData.detail
                                 textFormat: Text.PlainText
                                 elide: Text.ElideRight
-                                color: Look.t.text_muted
+                                color: row.plainInk ? Look.t.hover_text : Look.t.text_muted
                                 font.pixelSize: Look.fsCaption
                                 Accessible.ignored: true
                             }
@@ -215,7 +218,7 @@ Item {
                                 visible: text !== ""
                                 text: row.modelData.callers
                                 textFormat: Text.PlainText
-                                color: Look.t.callers_affected_text
+                                color: row.plainInk ? Look.t.hover_text : Look.t.callers_affected_text
                                 font.pixelSize: Look.fsCaption
                                 Accessible.ignored: true
                             }
@@ -231,7 +234,8 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             text: row.modelData.value
                             textFormat: Text.PlainText
-                            color: row.modelData.draft ? Look.t.accent_text : Look.t.text_muted
+                            color: row.plainInk ? Look.t.hover_text
+                                : row.modelData.draft ? Look.t.accent_text : Look.t.text_muted
                             font.pixelSize: Look.fsBody
                             font.weight: row.modelData.draft ? Font.DemiBold : Font.Normal
                             font.features: { "tnum": 1 }
@@ -242,7 +246,7 @@ Item {
                             leftPadding: 6
                             text: row.modelData.group
                             textFormat: Text.PlainText
-                            color: row.selected ? Look.t.text_muted : Look.t.text_dim
+                            color: row.plainInk ? Look.t.hover_text : row.selected ? Look.t.text_muted : Look.t.text_dim
                             font.pixelSize: Look.fsCaption
                             Accessible.ignored: true
                         }

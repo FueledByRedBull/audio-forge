@@ -909,15 +909,23 @@ Rectangle {
                 Row {
                     spacing: 14
                     Repeater {
-                        model: [["Input", root.t.text_muted], ["Output", root.t.accent]]
+                        model: [["Input", root.t.text_muted, false], ["Output", root.t.accent, true]]
                         delegate: Row {
+                            id: key
                             required property var modelData
                             spacing: 6
-                            Rectangle {
-                                width: 10
-                                height: 2
-                                color: parent.modelData[1]
+                            // The swatch is the line as drawn: output is dashed (two 6 px dashes, 3 px apart).
+                            Row {
+                                spacing: 3
                                 anchors.verticalCenter: parent.verticalCenter
+                                Repeater {
+                                    model: key.modelData[2] ? 2 : 1
+                                    delegate: Rectangle {
+                                        width: key.modelData[2] ? 6 : 15
+                                        height: 2
+                                        color: key.modelData[1]
+                                    }
+                                }
                             }
                             Text {
                                 textFormat: Text.PlainText
@@ -1220,7 +1228,12 @@ Rectangle {
                     }
                     Behavior on opacity { NumberAnimation { duration: root.t.motionRow } }
                 }
-                FocusRing { control: navButton; outset: -2 }
+                // The selected fill is the focus colour under a contrast theme: ring it in the text on it.
+                FocusRing {
+                    control: navButton
+                    outset: -2
+                    border.color: navButton.current && root.t.highContrast ? root.t.hover_text : root.t.focus_ring
+                }
             }
             contentItem: Item {
                 Rectangle {
@@ -1258,7 +1271,7 @@ Rectangle {
                         width: parent.width
                         text: nav.name
                         textFormat: Text.PlainText
-                        color: nav.dim ? root.t.text_dim : root.t.text_primary
+                        color: nav.current ? root.t.hover_text : nav.dim ? root.t.text_dim : root.t.text_primary
                         font.pixelSize: root.fsBody
                         font.weight: Font.DemiBold
                         elide: Text.ElideRight
@@ -1328,7 +1341,7 @@ Rectangle {
                 id: readoutLabel
                 anchors.centerIn: parent
                 text: readout.meter.clipTagShown ? "CLIP" : readout.label
-                color: readout.meter.clipTagShown ? root.t.text_on_data_color : root.t.text_muted
+                color: readout.meter.clipTagShown ? root.t.text_on_mark : root.t.text_muted
                 font.pixelSize: root.fsCaption
                 font.weight: Font.DemiBold
                 Accessible.ignored: true

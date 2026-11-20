@@ -78,6 +78,9 @@ class SemanticPalette:
     text_on_accent: str = "#1b1005"
     # Dark text on a data color (EQ band, clip); a contrast theme keeps those colors.
     text_on_data_color: str = "#0f1013"
+    # The glyph or word on a filled status mark or the clip tag; a contrast theme paints
+    # those marks in the text color, so this is the window color there.
+    text_on_mark: str = "#0f1013"
     # Text on a hovered or selected control; the dark look keeps the normal text color.
     hover_text: str = "#ececf0"
     # Amber is selection and the primary action, nothing else.
@@ -292,6 +295,10 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         data_text=text, data_text_muted=text, data_curve=text,
         data_marker=accent, data_warning=accent, data_handle_selected=accent,
         meter_scale=text, meter_peak=text, meter_segment_off=disabled, meter_track=window, meter_track_ring=text,
+        # The light pastels of the dark look fail 3:1 on a light window, so the steps take
+        # the system colors; position along the bar and the CLIP word carry the level.
+        meter_safe=accent, meter_reduction=accent, meter_caution=text, meter_danger=text,
+        meter_clip=text, text_on_mark=window,
         toolbar_edge=text, toolbar_rim="#00000000",
         toolbar_control_top=window, toolbar_control_bottom=window,
         brand_mark_top=accent, brand_mark_bottom=accent, brand_mark_glyph=on_accent,
@@ -627,10 +634,11 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
             ("callers text", PALETTE.callers_affected_text),
         )
     ),
+    # Under a contrast theme the fill is the highlight, and every text on it is the highlighted text.
     *(
         (
             f"palette {label} on the selected row",
-            foreground,
+            foreground if SYSTEM_CONTRAST_COLORS is None else PALETTE.hover_text,
             flatten(PALETTE.accent_fill, flatten(PALETTE.glass_modal, PALETTE.app_surface)),
         )
         for label, foreground in (
@@ -663,7 +671,7 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
         )
     ),
     ("icon on a tile", PALETTE.tile_icon, flatten(PALETTE.tile_top, PALETTE.sidebar_top)),
-    ("selected row name", PALETTE.text_primary, flatten(PALETTE.accent_row_start, PALETTE.sidebar_top)),
+    ("selected row name", PALETTE.hover_text, flatten(PALETTE.accent_row_start, PALETTE.sidebar_top)),
     ("selected row line", PALETTE.accent_soft, flatten(PALETTE.accent_row_start, PALETTE.sidebar_top)),
     ("selected row icon", PALETTE.accent_bright, flatten(PALETTE.accent_tile_top, PALETTE.sidebar_top)),
     ("waiting pill text", PALETTE.text_primary, PALETTE.pill_surface),
@@ -683,6 +691,9 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
             ("success text", PALETTE.status_ok_text),
         )
     ),
+    # The check glyph on its disc in the setup steps, and the word on the clip tag.
+    ("step check mark on its disc", PALETTE.text_on_mark, PALETTE.status_ok_dot),
+    ("CLIP word on its tag", PALETTE.text_on_mark, PALETTE.meter_clip),
     # The band strip's badge: the band's number, dark on the band's color.
     *(
         (f"EQ band {number} number on its badge", PALETTE.text_on_data_color, color)
@@ -712,6 +723,17 @@ def control_boundary_pairs(palette: SemanticPalette) -> tuple[tuple[str, str, st
          flatten(palette.callers_affected_fill, palette.pane_surface)),
         ("callers affected edge on pane", palette.callers_affected_edge, palette.pane_surface),
         ("selected EQ handle ring on the graph", palette.data_handle_selected, palette.data_surface),
+        # Each step of the level bars against the track behind it.
+        *(
+            (f"{name} on its track", getattr(palette, token), flatten(palette.meter_track, palette.pane_surface))
+            for name, token in (
+                ("meter safe step", "meter_safe"),
+                ("meter caution step", "meter_caution"),
+                ("meter danger step", "meter_danger"),
+                ("meter clip strip", "meter_clip"),
+                ("meter reduction bar", "meter_reduction"),
+            )
+        ),
     )
 
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import QEvent, QObject, QRectF, Qt
-from PySide6.QtGui import QAccessible, QKeyEvent
+from PySide6.QtGui import QAccessible, QColor, QKeyEvent
 from PySide6.QtQml import QQmlEngine, QQmlExpression
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QDialog
@@ -541,3 +541,46 @@ def test_under_reduced_motion_the_palette_only_fades(request, monkeypatch, qapp,
     assert _duration(window, "fade") == theme["motionCrossfade"]
     QTest.qWait(max(theme["motionPanelClose"], theme["motionCrossfade"]) + 100)
     assert overlay.property("progress") == 0 and not overlay.isVisible()
+
+
+@pytest.fixture(params=["dark", "HC Black", "HC White"])
+def themed_window(request, monkeypatch):
+    """The window in the dark look, then in the Windows black and white contrast themes."""
+    from test_quick_accessibility import _system_themes, use_system_theme
+
+    system = _system_themes()[request.param]
+    palette = use_system_theme(monkeypatch, system)
+    window = request.getfixturevalue("quick_window")
+    vars(window)["system_palette"], vars(window)["system_colors"] = palette, system
+    return window
+
+
+def test_every_text_on_the_selected_row_reads_on_its_fill_in_each_theme(themed_window, qapp) -> None:
+    from mic_eq.ui.theme import contrast_ratio, flatten
+
+    window, palette, system = themed_window, themed_window.system_palette, themed_window.system_colors
+    _show(window, qapp)
+    _press(window, Qt.Key.Key_K, qapp, Qt.KeyboardModifier.ControlModifier)
+    _type(window, "limiter ceiling", qapp)
+    _press(window, Qt.Key.Key_Left, qapp)
+    row = _palette(window).rows[0]
+    # A draft shows its value in the accent text; every row says what callers hear.
+    assert row["draft"] and row["callers"] and row["detail"] and row["value"] and row["group"]
+    (delegate,) = _delegates(window)
+    colours = {
+        item.property("text"): QColor(item.property("color")).name()
+        for item in _items(delegate)
+        if item.metaObject().className().startswith("QQuickText") and item.property("text")
+    }
+    assert set(colours) == {row["title"], row["detail"], row["callers"], row["value"], row["group"]}
+    fill = flatten(palette.accent_fill, flatten(palette.glass_modal, palette.app_surface))
+    if system:
+        # The fill is the highlight: all five are the highlighted text.
+        assert set(colours.values()) == {palette.hover_text.lower()}
+    else:
+        assert colours == {
+            row["title"]: palette.hover_text, row["detail"]: palette.text_muted,
+            row["callers"]: palette.callers_affected_text, row["value"]: palette.accent_text,
+            row["group"]: palette.text_muted,
+        }
+    assert all(contrast_ratio(colour, fill) >= 4.5 for colour in colours.values()), colours

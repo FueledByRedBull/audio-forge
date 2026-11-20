@@ -22,7 +22,7 @@ from PySide6.QtCore import (
     QTimer,
     qInstallMessageHandler,
 )
-from PySide6.QtGui import QAccessible, QColor, QFont, QGuiApplication, QImage, QKeyEvent, QMouseEvent, QPainter
+from PySide6.QtGui import QAccessible, QColor, QFont, QGuiApplication, QImage, QKeyEvent, QMouseEvent, QPainter, QPen
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtQml import QQmlProperty, qmlTypeId
 from PySide6.QtQuick import QSGRendererInterface
@@ -2946,3 +2946,36 @@ def test_the_shortcut_row_shows_the_windows_own_shortcuts_one_phrase_each(quick_
         assert [scene.name(item) for item in items] == [
             "Ctrl+Enter: Start", "Ctrl+.: Stop", "Ctrl+M: Mute", "Ctrl+K: Search",
         ]
+
+
+def test_the_level_trace_tells_output_from_input_by_more_than_colour(qapp) -> None:
+    class PenLog(QPainter):
+        def __init__(self, image: QImage) -> None:
+            super().__init__(image)
+            self.pens: list = []
+
+        def setPen(self, pen) -> None:  # type: ignore[override]
+            self.pens.append(pen)
+            super().setPen(pen)
+
+    trace = quick_shell.LevelTrace()
+    trace.setWidth(240)
+    trace.setHeight(52)
+    trace.setProperty("points", [[-30.0 - index % 7, -20.0 - index % 5] for index in range(40)])
+    image = QImage(240, 52, QImage.Format.Format_ARGB32)
+    painter = PenLog(image)
+    trace.paint(painter)
+    painter.end()
+    lines = [pen for pen in painter.pens if isinstance(pen, QPen)]
+    assert len(lines) == 2
+    input_line, output_line = lines
+    assert (input_line.style(), output_line.style()) == (Qt.PenStyle.SolidLine, Qt.PenStyle.DashLine)
+    assert input_line.color() != output_line.color()
+    # Dash lengths are in pen widths; the legend draws them in pixels.
+    dash, gap = (length * output_line.widthF() for length in output_line.dashPattern()[:2])
+
+    # The legend's swatches are those lines: a solid one, and two dashes a gap apart.
+    legend = (Path(quick_shell.__file__).parent / "qml" / "Main.qml").read_text(encoding="utf-8")
+    assert '["Input", root.t.text_muted, false], ["Output", root.t.accent, true]' in legend
+    assert f"width: key.modelData[2] ? {dash:g} : {2 * dash + gap:g}" in legend
+    assert "model: key.modelData[2] ? 2 : 1" in legend

@@ -107,7 +107,11 @@ class LevelTrace(QQuickPaintedItem):
         points = self._points[-TRACE_POINTS:]
         first = TRACE_POINTS - len(points)
         for line, color in enumerate((PALETTE.text_muted, PALETTE.accent)):
-            painter.setPen(QPen(qcolor(color), 1.5))
+            pen = QPen(qcolor(color), 1.5)
+            if line == 1:
+                # Output is dashed, so the two lines differ by more than colour; the legend's swatches match.
+                pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
             painter.drawPolyline(
                 [
                     QPointF(

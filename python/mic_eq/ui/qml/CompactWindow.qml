@@ -94,7 +94,7 @@ Rectangle {
                 anchors.centerIn: parent
                 text: readout.meter.clipTagShown ? "CLIP" : readout.label
                 textFormat: Text.PlainText
-                color: readout.meter.clipTagShown ? root.t.text_on_data_color : root.t.text_muted
+                color: readout.meter.clipTagShown ? root.t.text_on_mark : root.t.text_muted
                 font.pixelSize: Look.fsCaption
                 font.weight: Font.DemiBold
                 Accessible.ignored: true

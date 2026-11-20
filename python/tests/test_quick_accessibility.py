@@ -2243,3 +2243,65 @@ def test_the_alert_look_of_a_mode_picker_does_not_rely_on_colour(themed_window, 
     if window.contrast:
         # The theme has one text colour: the colours of the two looks are the same.
         assert (bypass[1], bypass[3]) == (normal[1], normal[3])
+
+
+def use_system_theme(monkeypatch, system: dict | None):
+    """Have the scenes loaded from now on drawn as under Windows contrast theme ``system`` (None: dark).
+
+    Returns the palette they read.
+    """
+    from mic_eq.ui.theme import PALETTE, build_palette
+
+    if system is None:
+        return PALETTE
+    palette = build_palette(system)
+    monkeypatch.setattr("mic_eq.ui.quick_scene.PALETTE", palette)
+    monkeypatch.setattr("mic_eq.ui.quick_scene.SYSTEM_CONTRAST_COLORS", system)
+    return palette
+
+
+def _system_themes() -> dict[str, dict | None]:
+    from test_theme_tokens import HC_BLACK, HC_WHITE
+
+    return {"dark": None, "HC Black": HC_BLACK, "HC White": HC_WHITE}
+
+
+@pytest.fixture(params=list(_system_themes()))
+def system_window(request, monkeypatch):
+    """The window in the dark look, then in the Windows black and white contrast themes."""
+    palette = use_system_theme(monkeypatch, _system_themes()[request.param])
+    window = request.getfixturevalue("quick_window")
+    vars(window)["system_palette"] = palette
+    vars(window)["system_colors"] = _system_themes()[request.param]
+    return window
+
+
+def test_the_selected_sidebar_row_reads_and_rings_on_its_fill_in_every_theme(system_window, qapp) -> None:
+    from mic_eq.ui.theme import contrast_ratio, flatten
+
+    window, palette, system = system_window, system_window.system_palette, system_window.system_colors
+    _show(window, qapp, OVERVIEW)
+    row = _named(window, "Overview", *PLAIN_BUTTONS)
+    assert row.property("current") is True
+    fill = flatten(palette.accent_row_start, palette.sidebar_top)
+    name = next(
+        item for item in _items(row.property("contentItem"))
+        if _kind(item) == "QQuickText" and item.property("text") == "Overview"
+    )
+    assert _colour(name, "color") == palette.hover_text.lower()
+    assert contrast_ratio(_colour(name, "color"), fill) >= 4.5
+
+    _focus(window, row, qapp)
+    (ring,) = _rings(window, row)
+    ring_colour = _colour(ring, "border.color")
+    # Highlight on a Highlight fill would vanish: the ring takes the text colour on the fill instead.
+    assert ring_colour == (palette.hover_text if system else palette.focus_ring).lower()
+    assert contrast_ratio(ring_colour, fill) >= 3
+    if system:
+        assert system["highlight"] != ring_colour
+
+    # A row that is not selected keeps the usual ring and text.
+    other = _named(window, "Equalizer", *PLAIN_BUTTONS)
+    _focus(window, other, qapp)
+    (other_ring,) = _rings(window, other)
+    assert _colour(other_ring, "border.color") == palette.focus_ring.lower()

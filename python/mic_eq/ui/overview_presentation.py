@@ -176,21 +176,35 @@ def _sentence(inputs: OverviewInputs) -> tuple[str, str, str, str, str]:
     return "live", LIVE_HEADLINES[mode], detail, "ok", LIVE_NAV_LINES[mode]
 
 
+# The check lines that name a device after their label. A device name may itself hold the
+# separator, so a line splits only after one of these.
+MICROPHONE_FOUND = "Microphone found"
+OUTPUT_FOUND = "Output found"
+NO_INPUT_DEVICES = "No input devices detected"
+_LABELLED_CHECKS = (MICROPHONE_FOUND, OUTPUT_FOUND, NO_INPUT_DEVICES)
+
+
+def split_check(text: str) -> tuple[str, str]:
+    """A check line's label and what follows its separator; the whole line and "" when it has no label."""
+    label, separator, rest = text.partition(f" {DOT} ")
+    return (label, rest) if separator and label in _LABELLED_CHECKS else (text, "")
+
+
 def _checks(state: str, inputs: OverviewInputs) -> tuple[str, tuple[tuple[str, str], ...]]:
     if state == "no_mic":
         output = (
-            (f"Output found {DOT} {inputs.output_name}", "ok") if inputs.output_name
+            (f"{OUTPUT_FOUND} {DOT} {inputs.output_name}", "ok") if inputs.output_name
             else ("No output devices detected", "warn") if not inputs.output_found
             else ("Output found, none chosen yet", "warn")
         )
         return "What AudioForge checked", (
-            (f"No input devices detected {DOT} the Input list is empty", "warn"),
+            (f"{NO_INPUT_DEVICES} {DOT} the Input list is empty", "warn"),
             output,
             (f"Make sure your microphone is connected, and check it in {SOUND_SETTINGS}", "note"),
         )
     if state != "ready":
         return "", ()
-    lines = [(f"Microphone found {DOT} {inputs.input_name or 'Default input'}", "ok")]
+    lines = [(f"{MICROPHONE_FOUND} {DOT} {inputs.input_name or 'Default input'}", "ok")]
     if inputs.output_name:
         lines.append((f"Output set to {inputs.output_name}", "ok"))
         if inputs.output_virtual:

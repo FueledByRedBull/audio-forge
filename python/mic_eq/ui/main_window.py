@@ -183,6 +183,8 @@ MINIMUM_WINDOW_WIDTH = 900
 MINIMUM_WINDOW_HEIGHT = 640
 # The pages in navigation order; the shared page state and the page stack follow it.
 PAGE_NAMES = ("Overview", "Health", "Settings", "Equalizer")
+# The summary while the stream runs but its counters could not be judged this tick.
+HEALTH_NOT_READ = "Health: --"
 NO_DESTINATION_WARNING = "Warning: No output device is selected. Choose one in the Output list, then press Start."
 NO_INPUT_PLACEHOLDER = "Nothing to select yet"
 NO_MIC_START_TIP = "Start audio, no microphone to start from"
@@ -356,6 +358,8 @@ class MainWindow(QMainWindow):
     restart_audio_btn_action: QAction
     choose_microphone_btn_action: QAction
     user_mute_checkbox_action: QAction
+    start_menu_action: QAction
+    stop_menu_action: QAction
     _undo_auto_eq_button_action: QAction
     redo_button_action: QAction
     test_sound_button_action: QAction
@@ -697,11 +701,13 @@ class MainWindow(QMainWindow):
     def _set_health_chip(self, key: str, text: str, state: str) -> None:
         self.shell_texts[key].update(text=text, status=state)
 
-    def _reset_health_labels(self) -> None:
+    def _reset_health_labels(self, *, running: bool = False) -> None:
+        """Clear every Health reading; ``running`` says the stream is up but has no summary yet."""
         startup_message = self.__dict__.get("_login_startup_message", "")
+        idle_summary = HEALTH_NOT_READ if running else TEXT_SPECS["health_summary_label"].text
         self._set_health_chip(
             "health_summary_label",
-            startup_message or TEXT_SPECS["health_summary_label"].text,
+            startup_message or idle_summary,
             "warn" if startup_message else "idle",
         )
         for key in HEALTH_DECISION_KEYS + HEALTH_LAYOUT_KEYS:
@@ -1048,11 +1054,13 @@ class MainWindow(QMainWindow):
         start_action.setShortcut("Ctrl+Return")
         start_action.triggered.connect(self._on_menu_start)
         file_menu.addAction(start_action)
+        self.start_menu_action = start_action
 
         stop_action = QAction("S&top Processing", self)
         stop_action.setShortcut("Ctrl+.")
         stop_action.triggered.connect(self._on_menu_stop)
         file_menu.addAction(stop_action)
+        self.stop_menu_action = stop_action
 
         file_menu.addSeparator()
 
@@ -3519,7 +3527,7 @@ class MainWindow(QMainWindow):
     def _show_health(self, view: HealthView) -> None:
         """Render one tick's Health view; ``health.HealthMonitor`` decides it."""
         if view.reset:
-            self._reset_health_labels()
+            self._reset_health_labels(running=True)
         for key, chip in view.chips.items():
             self._set_health_chip(key, chip.text, chip.state)
             if chip.tip is not None:

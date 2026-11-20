@@ -22,7 +22,7 @@ from mic_eq.ui.health import (
     HealthReport,
     advice_for,
 )
-from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.main_window import HEALTH_NOT_READ, MainWindow
 from mic_eq.ui.shell_specs import (
     LATENCY_LOWER_BOUND_NOTE,
     LATENCY_LOWER_BOUND_NOTE_NO_BUFFER,
@@ -452,7 +452,8 @@ def test_the_window_shows_a_reset_view_without_reading_the_summary_back(isolated
         TEXT_SPECS["input_health_label"].text, "idle",
     )
     summary = texts["health_summary_label"]
-    assert (summary.text, summary.state) == (TEXT_SPECS["health_summary_label"].text, "idle")
+    # Still running, the summary waits for the next reading rather than saying it stopped.
+    assert (summary.text, summary.state) == (HEALTH_NOT_READ, "idle")
     assert texts["health_advice_label"].text == TEXT_SPECS["health_advice_label"].text
 
 

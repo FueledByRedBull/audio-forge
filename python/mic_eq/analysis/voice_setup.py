@@ -57,7 +57,14 @@ from .vad import (
     analyze_offline_vad,
     map_causal_vad_probabilities,
 )
-from ..config import DeEsserSettings, EQ_FREQUENCIES, EQSettings, GateSettings, build_eq_candidate_settings
+from ..config import (
+    DeEsserSettings,
+    EQ_FREQUENCIES,
+    EQSettings,
+    GateSettings,
+    RNNoiseSettings,
+    build_eq_candidate_settings,
+)
 
 NOISE_MIN_DURATION_S = MIN_NOISE_DURATION_S
 SPEECH_MIN_DURATION_S = 3.0
@@ -928,9 +935,9 @@ class VoiceSetupRequest:
     custom_peak_cap_db: float = 8.0
     target_lufs: float | None = None
     limiter_settings: Mapping[str, Any] | None = None
-    noise_model: str = "rnnoise"
-    suppressor_strength: float = 1.0
-    suppressor_enabled: bool = True
+    noise_model: str = RNNoiseSettings.model
+    suppressor_strength: float = RNNoiseSettings.strength
+    suppressor_enabled: bool = RNNoiseSettings.enabled
     incumbent_settings: Mapping[str, Any] | None = None
     raw_noise_audio: np.ndarray | None = None
     raw_speech_audio: np.ndarray | None = None

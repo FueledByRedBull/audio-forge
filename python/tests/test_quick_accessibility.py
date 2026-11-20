@@ -1071,7 +1071,7 @@ def test_the_focused_control_always_shows_where_focus_is(either_window, qapp, pa
     assert unmarked == []
     expected = {
         OVERVIEW: {
-            "Toggle", "ChainSwitch", "Fader", "Picker", "Btn", "MuteBtn", "LinkBtn", "Disclosure", "CloseBtn",
+            "Toggle", "ChainSwitch", "Fader", "Picker", "Btn", "MuteBtn", "LinkBtn", "Disclosure", "CloseCross",
         },
         HEALTH: {"HealthRow", "Disclosure"},
         SETTINGS: {"SettingRow", "Picker"},
@@ -2116,7 +2116,7 @@ def test_the_close_button_is_named_for_its_stage_and_gives_focus_back(quick_wind
     with _AccessibleScene() as scene:
         row = _named(window, "Compressor", *PLAIN_BUTTONS)
         _activate(window, row, Qt.Key.Key_Return, qapp)
-        close = _named(window, "Close Compressor", "CloseBtn")
+        close = _named(window, "Close Compressor", "CloseCross")
         assert _iface(close).role() == Role.Button and scene.description(close) == "Esc"
         # Its ring shows on the glass.
         _focus(window, close, qapp)
@@ -2244,7 +2244,7 @@ def test_every_control_in_a_stage_inspector_is_reached_and_named(quick_window, q
     _open_every_disclosure(window, qapp)
     panel = next(p for p in _of_kind(window, "InspectorPanel") if p.isVisible())
     inside = {id(item) for item in _items(panel)}
-    controls = [item for item in _tabbable(window, KEYBOARD_KINDS + ("CloseBtn",)) if id(item) in inside]
+    controls = [item for item in _tabbable(window, KEYBOARD_KINDS + ("CloseCross",)) if id(item) in inside]
     assert controls
     stops = _tab_cycle(window, qapp)
     with _AccessibleScene() as scene:

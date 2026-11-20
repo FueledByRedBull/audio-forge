@@ -81,6 +81,11 @@ Rectangle {
             tip.close()
     }
 
+    // The hint of a status line: its text when the line cuts it off, then its help.
+    function hintFor(label, toolTip) {
+        return [label.truncated ? label.text : "", toolTip].filter(t => t !== "").join("\n\n")
+    }
+
     // Hovering the parent or moving keyboard focus onto it shows the help; a click does not.
     component Hint: HoverHandler {
         property string text: ""
@@ -523,24 +528,20 @@ Rectangle {
         property bool announced: true
         // One line, cut short with "..." when the chip is limited in width.
         property bool single: false
-        readonly property string state_: proxy && proxy.state !== "" ? proxy.state : "idle"
+        readonly property string state_: Look.statusState(proxy)
         implicitHeight: chipText.implicitHeight + 12
         implicitWidth: chipText.implicitWidth + 24
         radius: root.t.radiusControl
-        color: root.t["status_" + state_ + "_surface"] ?? root.t.status_idle_surface
-        border.color: root.t["status_" + state_ + "_border"] ?? root.t.status_idle_border
-        Hint {
-            text: chip.proxy
-                  ? [chipText.truncated ? chipText.text : "", chip.proxy.toolTip].filter(t => t !== "").join("\n\n")
-                  : ""
-        }
+        color: Look.statusSurface(state_)
+        border.color: Look.statusBorder(state_)
+        Hint { text: chip.proxy ? root.hintFor(chipText, chip.proxy.toolTip) : "" }
         Text {
             id: chipText
             textFormat: Text.PlainText
             anchors.centerIn: parent
             width: Math.min(implicitWidth, chip.width - 24)
             text: chip.proxy ? chip.proxy.text : ""
-            color: root.t["status_" + chip.state_ + "_text"] ?? root.t.status_idle_text
+            color: Look.statusText(chip.state_)
             font.pixelSize: root.fsBody
             wrapMode: chip.single ? Text.NoWrap : Text.Wrap
             elide: Text.ElideRight
@@ -618,31 +619,6 @@ Rectangle {
                 Accessible.description: line.p.valueText
             }
         }
-    }
-
-    component CardHeader: RowLayout {
-        id: header
-        property var card
-        spacing: 12
-        Toggle { proxy: header.card.toggle; visible: header.card.toggle !== null }
-        Title { text: header.card.title }
-        // A stage that is off keeps its controls at full strength; this says why nothing happens.
-        Caption {
-            text: "Off"
-            visible: header.card.toggle !== null && !header.card.toggle.checked
-        }
-        IconBtn {
-            glyph: root.m.glyphs.help
-            hint: header.card.help
-            label: "?"
-            visible: hint !== ""
-            onClicked: root.showTip(this, hint, true)
-            onActiveFocusChanged: if (!activeFocus) root.hideTip(this)
-            Keys.onEscapePressed: root.hideTip(this)
-            Accessible.name: "Help for " + header.card.title.toLowerCase()
-            Accessible.description: hint
-        }
-        Item { Layout.fillWidth: true }
     }
 
     // The chevron after a label whose control opens something: a menu, a list or a section.
@@ -759,7 +735,7 @@ Rectangle {
         readonly property string value: proxy.text.startsWith(row.title + ":")
                                         ? proxy.text.slice(row.title.length + 1).trim() : proxy.text
         readonly property string shownValue: value.charAt(0).toUpperCase() + value.slice(1)
-        readonly property string state_: proxy.state !== "" ? proxy.state : "idle"
+        readonly property string state_: Look.statusState(proxy)
         activeFocusOnTab: true
         Accessible.role: Accessible.StaticText
         Accessible.name: proxy.name + ": " + shownValue
@@ -772,7 +748,7 @@ Rectangle {
                 implicitWidth: 8
                 implicitHeight: 8
                 radius: 4
-                color: root.t["status_" + health.state_ + "_text"] ?? root.t.status_idle_text
+                color: Look.statusText(health.state_)
             }
             Caption {
                 text: health.row.title
@@ -799,7 +775,7 @@ Rectangle {
         // The room left of the content, and right of it where the scroll bar runs.
         property int leftInset: 8
         property int rightInset: 16
-        property string scrollName: "Page scroll bar"
+        scrollName: "Page scroll bar"
         // The page's ground behind its content; it stays put while the content scrolls.
         property color ground: "transparent"
         // The height the page keeps from its content: the room above the column and below it.
@@ -809,16 +785,6 @@ Rectangle {
         acceptedButtons: Qt.NoButton
         followed: column
         following: !root.pressing
-        ScrollBar.vertical: ScrollBar {
-            id: bar
-            Accessible.name: page.scrollName
-            policy: page.contentHeight > page.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
-            contentItem: Rectangle {
-                implicitWidth: 6
-                radius: 3
-                color: bar.pressed || bar.hovered ? root.t.text_muted : root.t.control_edge
-            }
-        }
         Rectangle {
             parent: page
             anchors.fill: parent
@@ -832,34 +798,6 @@ Rectangle {
             y: 4
             width: parent.width - page.leftInset - page.rightInset
             spacing: 16
-        }
-    }
-
-    // The cross that closes the inspector, drawn as two strokes so it needs no icon font.
-    component CloseBtn: KeyButton {
-        id: closer
-        implicitWidth: 30
-        implicitHeight: 30
-        Accessible.role: Accessible.Button
-        Accessible.description: "Esc"
-        background: Rectangle {
-            radius: root.t.radiusControl
-            color: closer.hovered ? root.t.control_hover : "transparent"
-            FocusRing { control: closer }
-        }
-        contentItem: Item {
-            Repeater {
-                model: [45, -45]
-                delegate: Rectangle {
-                    required property int modelData
-                    anchors.centerIn: parent
-                    width: 14
-                    height: 2
-                    radius: 1
-                    rotation: modelData
-                    color: closer.hovered ? root.t.hover_text : root.t.text_muted
-                }
-            }
         }
     }
 
@@ -891,7 +829,7 @@ Rectangle {
             }
             // The key that does what the cross does.
             EscChip {}
-            CloseBtn {
+            CloseCross {
                 id: closeButton
                 Accessible.name: "Close " + panel.card.name
                 onClicked: panel.closeRequested(visualFocus ? Qt.TabFocusReason : Qt.MouseFocusReason)
@@ -1683,7 +1621,6 @@ Rectangle {
                 }
             }
             Item {
-                id: startReason
                 Layout.fillWidth: true
                 // A row that fits keeps the reason on one line. In a narrow window it wraps onto two
                 // lines rather than vanish; cut short with large text, it is whole in the tooltip.
@@ -1799,15 +1736,11 @@ Rectangle {
     component HealthChip: Item {
         id: chip
         property var proxy
-        readonly property string level: proxy && proxy.state !== "" ? proxy.state : "idle"
+        readonly property string level: Look.statusState(proxy)
         readonly property string shown: proxy ? proxy.text : ""
         implicitHeight: 28
         implicitWidth: mark.width + 8 + healthText.implicitWidth
-        Hint {
-            text: chip.proxy
-                  ? [healthText.truncated ? healthText.text : "", chip.proxy.toolTip].filter(t => t !== "").join("\n\n")
-                  : ""
-        }
+        Hint { text: chip.proxy ? root.hintFor(healthText, chip.proxy.toolTip) : "" }
         Text {
             id: healthText
             x: mark.width + 8
@@ -1930,7 +1863,6 @@ Rectangle {
             }
 
             Page {
-                id: navigation
                 leftInset: 0
                 // Room for the scroll bar only when there is one.
                 rightInset: contentHeight > height ? 8 : 0
@@ -2435,7 +2367,6 @@ Rectangle {
                                     anchors.rightMargin: 18
                                     anchors.verticalCenter: parent.verticalCenter
                                     StatusText {
-                                        id: checkText
                                         text: check.modelData.label
                                         color: check.modelData.kind === "note" ? root.t.text_muted : root.t.text_primary
                                         font.pixelSize: root.fsLead
@@ -3256,7 +3187,6 @@ Rectangle {
                         }
                         // One row while the gain fader keeps room beside the fields; two on a narrow page.
                         GridLayout {
-                            id: bandEditor
                             objectName: "bandEditorRow"
                             readonly property bool oneRow: width >= gainRow.implicitWidth + columnSpacing + fieldsRow.implicitWidth
                             columns: oneRow ? 2 : 1
@@ -3333,7 +3263,7 @@ Rectangle {
                         id: eqStatus
                         objectName: "eqStatus"
                         readonly property var proxy: equalizerPage.eq.diagnostics
-                        readonly property string state_: proxy.state !== "" ? proxy.state : "idle"
+                        readonly property string state_: Look.statusState(proxy)
                         spacing: 6
                         visible: proxy.shown && equalizerPage.calibrated
                         Layout.fillWidth: true
@@ -3354,10 +3284,7 @@ Rectangle {
                             Accessible.role: Accessible.StaticText
                             Accessible.name: eqStatus.proxy.name !== "" ? eqStatus.proxy.name + ": " + text : text
                             Accessible.description: eqStatus.proxy.toolTip
-                            Hint {
-                                text: [statusWords.truncated ? statusWords.text : "", eqStatus.proxy.toolTip]
-                                      .filter(t => t !== "").join("\n\n")
-                            }
+                            Hint { text: root.hintFor(statusWords, eqStatus.proxy.toolTip) }
                         }
                     }
                     Item { visible: !eqStatus.visible; implicitHeight: 1; Layout.fillWidth: true }

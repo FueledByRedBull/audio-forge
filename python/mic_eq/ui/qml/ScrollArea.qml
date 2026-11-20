@@ -4,6 +4,7 @@
 // the ends. Ctrl, Alt and Meta leave a key to shortcuts, and a text field keeps the arrows and
 // Home and End for its cursor.
 import QtQuick
+import QtQuick.Controls.Basic
 
 Flickable {
     id: area
@@ -11,6 +12,18 @@ Flickable {
     property Item followed
     // Off while something else, such as a pointer press, is placing the page.
     property bool following: true
+    // What assistive technology calls the scroll bar.
+    property string scrollName
+    ScrollBar.vertical: ScrollBar {
+        id: bar
+        Accessible.name: area.scrollName
+        policy: area.contentHeight > area.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+        contentItem: Rectangle {
+            implicitWidth: 6
+            radius: 3
+            color: bar.pressed || bar.hovered ? Look.t.text_muted : Look.t.control_edge
+        }
+    }
     readonly property real lineStep: Look.fsBody * 3
     readonly property real maxY: Math.max(0, contentHeight - height)
     boundsBehavior: Flickable.StopAtBounds

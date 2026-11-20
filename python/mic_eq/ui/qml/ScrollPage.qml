@@ -1,7 +1,6 @@
 // The page of a dialog scene: a column that scrolls only vertically, and from the keyboard.
 // Children are laid out in the column; `label` is what assistive technology calls the page.
 import QtQuick
-import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 Item {
@@ -25,16 +24,7 @@ Item {
         activeFocusOnTab: true
         Accessible.role: Accessible.Pane
         Accessible.name: page.label
-        ScrollBar.vertical: ScrollBar {
-            id: bar
-            Accessible.name: "Content scroll bar"
-            policy: scroll.contentHeight > scroll.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
-            contentItem: Rectangle {
-                implicitWidth: 6
-                radius: 3
-                color: bar.pressed || bar.hovered ? Look.t.text_muted : Look.t.control_edge
-            }
-        }
+        scrollName: "Content scroll bar"
         ColumnLayout {
             id: column
             objectName: "contentColumn"

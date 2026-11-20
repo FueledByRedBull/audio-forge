@@ -3,7 +3,10 @@
 Use Windows x64, CPython 3.13.17 and the Rust compiler in `rust-toolchain.toml`.
 The supported source-build contract uses the checked-in dependency locks; newer
 Python or Rust releases are not implicitly qualified. See the [README](README.md)
-for setup and [RELEASING](RELEASING.md) for packaging and publication.
+for setup and [RELEASING](RELEASING.md) for packaging and publication. Decisions
+about how the engine or the build is put together, with the alternatives that
+were rejected and why, are recorded in [`docs/adr/`](docs/adr/); add one there
+when a change makes such a decision.
 
 Use `dev.ps1` from PowerShell 7+. Its default environment is `.venv`; add
 `-VenvPath .venv313` for a checkout using that existing environment. Bootstrap

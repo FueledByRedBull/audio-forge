@@ -5,15 +5,15 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, QRectF, Qt
-from PySide6.QtGui import QAccessible, QKeyEvent
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt
+from PySide6.QtGui import QAccessible, QColor, QKeyEvent
 from PySide6.QtQml import QQmlEngine, QQmlExpression
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QDialog
 
 from mic_eq.config import BUILTIN_PRESETS
 from mic_eq.ui.command_palette import CALLERS_LINE, CALLERS_MUTED_LINE, NO_MATCH_TEXT, stage_setting
-from test_quick_accessibility import no_qml_warnings  # noqa: F401  (an autouse fixture)
+from test_quick_accessibility import _perform, no_qml_warnings  # noqa: F401  (an autouse fixture)
 from test_quick_shell import _AccessibleScene
 from test_quick_shell import quick_window as shell_window  # noqa: F401  (a fixture)
 
@@ -400,6 +400,24 @@ def test_a_click_selects_a_row_and_a_click_on_the_selected_row_runs_it(quick_win
     assert window.limiter_state.get_settings()["enabled"] is (not before)
 
 
+def test_assistive_technology_can_press_a_row_to_run_it(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    palette = _palette(window)
+    before = window.limiter_state.get_settings()["enabled"]
+    palette.show_palette()
+    palette.setQuery("limiter")
+    QTest.qWait(window.quick_bridge.model["theme"]["motionPanelOpen"] + 100)
+    palette.select(1)
+    row = _delegates(window)[0]
+    assert palette.rows[0]["title"] == "Limiter" and palette.current == 1
+    with _AccessibleScene():
+        _perform(row, "pressAction")
+    qapp.processEvents()
+    assert not palette.shown
+    assert window.limiter_state.get_settings()["enabled"] is (not before)
+
+
 def test_a_second_ctrl_k_while_open_keeps_the_palette_as_it_is(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
@@ -541,3 +559,82 @@ def test_under_reduced_motion_the_palette_only_fades(request, monkeypatch, qapp,
     assert _duration(window, "fade") == theme["motionCrossfade"]
     QTest.qWait(max(theme["motionPanelClose"], theme["motionCrossfade"]) + 100)
     assert overlay.property("progress") == 0 and not overlay.isVisible()
+
+
+@pytest.fixture(params=["dark", "HC Black", "HC White"])
+def themed_window(request, monkeypatch):
+    """The window in the dark look, then in the Windows black and white contrast themes."""
+    from test_quick_accessibility import _system_themes, use_system_theme
+
+    system = _system_themes()[request.param]
+    palette = use_system_theme(monkeypatch, system)
+    window = request.getfixturevalue("quick_window")
+    vars(window)["system_palette"], vars(window)["system_colors"] = palette, system
+    return window
+
+
+def test_every_text_on_the_selected_row_reads_on_its_fill_in_each_theme(themed_window, qapp) -> None:
+    from mic_eq.ui.theme import contrast_ratio, flatten
+
+    window, palette, system = themed_window, themed_window.system_palette, themed_window.system_colors
+    _show(window, qapp)
+    _press(window, Qt.Key.Key_K, qapp, Qt.KeyboardModifier.ControlModifier)
+    _type(window, "limiter ceiling", qapp)
+    _press(window, Qt.Key.Key_Left, qapp)
+    row = _palette(window).rows[0]
+    # A draft shows its value in the accent text; every row says what callers hear.
+    assert row["draft"] and row["callers"] and row["detail"] and row["value"] and row["group"]
+    (delegate,) = _delegates(window)
+    colours = {
+        item.property("text"): QColor(item.property("color")).name()
+        for item in _items(delegate)
+        if item.metaObject().className().startswith("QQuickText") and item.property("text")
+    }
+    assert set(colours) == {row["title"], row["detail"], row["callers"], row["value"], row["group"]}
+    fill = flatten(palette.accent_fill, flatten(palette.glass_modal, palette.app_surface))
+    if system:
+        # The fill is the highlight: all five are the highlighted text.
+        assert set(colours.values()) == {palette.hover_text.lower()}
+    else:
+        assert colours == {
+            row["title"]: palette.hover_text, row["detail"]: palette.text_muted,
+            row["callers"]: palette.callers_affected_text, row["value"]: palette.accent_text,
+            row["group"]: palette.text_muted,
+        }
+    assert all(contrast_ratio(colour, fill) >= 4.5 for colour in colours.values()), colours
+
+
+def test_every_text_on_a_hovered_row_reads_on_its_fill_in_each_theme(themed_window, qapp) -> None:
+    from PySide6.QtCore import QPoint
+
+    from mic_eq.ui.theme import contrast_ratio, flatten
+
+    window, palette, system = themed_window, themed_window.system_palette, themed_window.system_colors
+    _show(window, qapp)
+    palette_model = _palette(window)
+    palette_model.show_palette()
+    QTest.qWait(400)
+    delegates = _delegates(window)
+    # An enabled row that is not the selected one, so its title is the usual text colour.
+    number = next(i for i, row in enumerate(palette_model.rows) if i != 0 and row["enabled"])
+    row, hovered = palette_model.rows[number], delegates[number]
+    centre = hovered.parentItem().mapToScene(QPointF(hovered.x() + 40, hovered.y() + hovered.height() / 2)).toPoint()
+    view = window.centralWidget()
+    QTest.mouseMove(view, QPoint(centre.x(), centre.y() - 1))
+    QTest.mouseMove(view, centre)
+    qapp.processEvents()
+    assert hovered.property("index") == number and palette_model.current == 0
+    colours = {
+        item.property("text"): QColor(item.property("color")).name()
+        for item in _items(hovered)
+        if item.metaObject().className().startswith("QQuickText") and item.property("text")
+    }
+    assert row["title"] in colours and row["detail"] in colours
+    fill = flatten(palette.control_hover, flatten(palette.glass_modal, palette.app_surface))
+    if system:
+        assert set(colours.values()) == {palette.hover_text.lower()}
+        assert all(contrast_ratio(colour, fill) >= 4.5 for colour in colours.values()), colours
+    else:
+        # The dark look keeps the usual text colours on a hovered row.
+        assert colours[row["title"]] == palette.text_primary
+        assert colours[row["detail"]] == palette.text_muted

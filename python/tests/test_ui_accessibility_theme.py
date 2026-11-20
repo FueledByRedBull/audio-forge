@@ -272,10 +272,7 @@ def test_a_contrast_theme_takes_every_surface_text_and_accent_from_the_system() 
 
 
 # Data colors a contrast theme keeps on purpose; every other token must follow the system.
-KEPT_UNDER_CONTRAST_THEME = {
-    "eq_band_colors", "text_on_data_color",
-    "meter_safe", "meter_caution", "meter_danger", "meter_clip", "meter_reduction",
-}
+KEPT_UNDER_CONTRAST_THEME = {"eq_band_colors", "text_on_data_color"}
 
 
 def test_every_color_token_follows_the_contrast_theme_or_is_kept_on_purpose() -> None:
@@ -290,10 +287,8 @@ def test_a_white_contrast_theme_keeps_the_peak_line_and_band_numbers_readable() 
         "highlight": "#37006e", "highlight_text": "#ffffff",
     })
     assert contrast_ratio(palette.meter_peak, palette.data_surface) >= 3
-    assert all(
-        contrast_ratio(palette.text_on_data_color, color) >= 4.5
-        for color in (*palette.eq_band_colors, palette.meter_clip)
-    )
+    assert all(contrast_ratio(palette.text_on_data_color, color) >= 4.5 for color in palette.eq_band_colors)
+    assert contrast_ratio(palette.text_on_mark, palette.meter_clip) >= 4.5
 
 
 def test_the_widget_palette_and_stylesheet_follow_the_contrast_theme(monkeypatch) -> None:

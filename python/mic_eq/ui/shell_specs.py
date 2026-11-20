@@ -42,6 +42,7 @@ class _TextSpec(NamedTuple):
     name: str
     tip: str = ""
     shown: bool = True
+    alert: bool = False  # told to a screen reader when it appears
 
 
 class _ChoiceSpec(NamedTuple):
@@ -67,8 +68,9 @@ TEXT_SPECS = {
         "Warning: No audio devices detected. Check your audio drivers and connections.",
         "Audio device warning",
         shown=False,
+        alert=True,
     ),
-    "config_warning_banner": _TextSpec("", "Configuration warning", shown=False),
+    "config_warning_banner": _TextSpec("", "Configuration warning", shown=False, alert=True),
     "preset_status_label": _TextSpec(
         "Preset: Default (saved)", "Active preset and saved state"
     ),

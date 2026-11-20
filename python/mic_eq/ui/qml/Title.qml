@@ -8,4 +8,5 @@ Text {
     font.weight: Font.DemiBold
     font.letterSpacing: 1.1
     font.capitalization: Font.AllUppercase
+    Accessible.role: Accessible.Heading
 }

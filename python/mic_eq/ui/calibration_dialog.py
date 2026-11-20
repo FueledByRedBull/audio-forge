@@ -228,6 +228,8 @@ class CalibrationDialog(QDialog):
             minimum_width=minimum_width,
             minimum_height=360,
         )
+        # Only what changes from here on is announced; the first page is read as the window opens.
+        self.view_model.announcer.attach(self.quick_view)
 
     @property
     def load_error(self) -> str | None:

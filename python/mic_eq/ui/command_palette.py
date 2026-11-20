@@ -11,9 +11,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import Property, QEvent, QObject, Qt, Signal, Slot
-from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent, QAction, QKeyEvent, QKeySequence
+from PySide6.QtGui import QAction, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import QWidget
 
+from .announcements import announce
 from .control_specs import control_label
 from .processing_controls import SettingControl
 from .shell_state import ActionControl
@@ -312,5 +313,4 @@ class CommandPalette(QObject):
             self._announce(", ".join(part for part in (row["title"], row["value"], row["description"]) if part))
 
     def _announce(self, text: str) -> None:
-        if QAccessible.isActive():
-            QAccessible.updateAccessibility(QAccessibleAnnouncementEvent(self._window, text))
+        announce(self._window, text)

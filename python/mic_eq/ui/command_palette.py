@@ -159,7 +159,6 @@ class CommandPalette(QObject):
     rows = Property(list, lambda self: self._rows, notify=changed)
     current = Property(int, lambda self: self._current, notify=changed)
     noMatchText = Property(str, lambda self: NO_MATCH_TEXT, constant=True)
-    shortcut = Property(str, lambda self: SHORTCUT, constant=True)
 
     def eventFilter(self, watched, event) -> bool:
         """Keep Ctrl+K for the palette when a text field in the scene would take it as an edit key.
@@ -183,7 +182,7 @@ class CommandPalette(QObject):
             value = command.setting.format_value(draft)
             detail = f"Was {command.setting.property('text')}. Enter applies it; Esc discards it."
         return {
-            "key": command.key, "group": command.group,
+            "group": command.group,
             "title": command.title(), "detail": detail, "callers": command.callers,
             "description": f"{detail} {command.callers}".strip(), "enabled": bool(command.enabled()),
             "value": value, "draft": draft is not None,

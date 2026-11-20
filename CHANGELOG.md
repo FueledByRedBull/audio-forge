@@ -2,6 +2,88 @@
 
 ## Unreleased
 
+### Upgrading
+
+- 1.24.0 no longer converts settings and presets saved before 1.23.0, as the 1.23.0 note announced. Anything 1.23.0 or newer wrote loads as before, and the audio path is unchanged. If you are on an older version, install 1.23.0 first, start it once and quit it so it saves your settings in the current format, and open and re-save each preset you want to keep. Then update.
+- A preset stamped before 1.23.0, or not stamped at all, does not open. It shows "This preset was saved by AudioForge X, which this version no longer converts. Open it in AudioForge 1.23.0, save it again, then open it here." and stays on disk. A preset that stores its EQ as plain band arrays or as one combined stage (EQ schema 2) is refused the same way.
+- A `config.json` with no `schema_version`, or one below 2, is not converted. AudioForge starts on default settings, keeps the old file as `config.json.corrupt` and shows a warning that says to run 1.23.0 once.
+- A config that predates the setup wizard no longer counts as an existing install. It starts first-run setup like a fresh install, where it used to be marked completed with every step skipped.
+- Calibration records at version 1 and latency profiles saved without a route latency are dropped on load, so those results are gone until you run the calibration again.
+- Device preset bindings saved as a bare string and input preferences keyed by a plain friendly name are dropped.
+- The `MicEq` folder used by 1.8.2 and older is no longer copied into the `AudioForge` folder.
+- A startup, last-used or route-bound preset that is refused for its age keeps its reference, so it opens again once you re-save it, and the status message says why. One notice per launch counts the refused files in the presets and imports folders: "N presets were saved by an older AudioForge and can't be opened here. Open and re-save them in AudioForge 1.23.0."
+- Saving is no longer held back by a pending conversion, and AudioForge no longer logs to the temp folder while one is pending, because neither state exists any more.
+
+### Main window
+
+- The tab rail and the old Mic page are replaced by a toolbar, a sidebar and an inspector. The pages are now Overview, Health, Settings and Equalizer, and "Mic" is called Overview. Stage headings are in sentence case, and "Auto Voice Setup" on the Overview button reads "Run Auto Voice Setup". Dialog titles and menus keep "Auto Voice Setup".
+- The toolbar is one row: the AudioForge name, the input and output pickers (a microphone and a speaker icon instead of the In and Out captions), Mode, Mute, IN and OUT level bars with a CLIP tag, the latency and Start or Stop. The latency reads `~12 ms` when measured and `≥ 12 ms` when estimated. When the row does not fit, the name, the Mode caption, the meter readings and the latency caption drop out in turn. It fits at 900 px at every font size from 9 to 14 pt.
+- The sidebar holds the preset picker, an Overview row and a Signal chain list: Input cleanup, Noise gate, Noise suppression, De-esser, Equalizer, Compressor and Limiter. Each row shows the stage's current setting (`-40 dB`, `RNNoise · 100%`, `Cut 4.0 dB`, `Idle`) and carries the stage's on/off switch. Health, calibration status, Measure latency and Settings sit in the footer. The de-esser, compressor and limiter rows also show a small level bar. The sidebar is 220 px wide below 1200 px and 256 px from 1200.
+- Clicking a stage row opens its settings in an inspector panel beside the page, in place of the stage cards. Esc, the close button or a second click closes it and returns focus to the row. From 1200 px the panel docks beside the page; below that it lies over it. It is frosted glass where Windows transparency is on and the renderer supports it, and a solid surface otherwise. With reduced motion it fades instead of sliding.
+- The Overview shows one status sentence with a mark (an open ring when idle, a disc when fine, a triangle for an issue, a diamond for a fault or lost callers, a square when muted), a 10-second level ribbon, an EQ preview, a route check and a row of the window's shortcuts (Ctrl+Enter to start, Ctrl+. to stop, Ctrl+M to mute and Ctrl+K to search). Muted ranks above clipping in the sentence, because callers hear silence then.
+- A mute the engine refuses is no longer shown as muted. The Overview says "Mute pending: the mute did not apply, so callers still hear your microphone." A refused unmute says "Unmute pending: the unmute did not apply, so callers may still hear silence."
+- With no microphone, Start is disabled with "No microphone to start from" beside it, the input picker says "Nothing to select yet", and the Overview lists what AudioForge checked, with Refresh audio devices. The old "no audio devices" banner is gone; a missing output now shows only in that list. A login start with no microphone says "Login waiting for a microphone" and, at the 60 s limit, "Login stopped: no microphone is available". Before, both lines spoke of saved endpoints.
+- "Your callers can't hear you" (device lost) has its own pink colour, so it no longer shares red with clipping. While stopped, Health reads "Health: not running", and the level card says "Starts when you press Start".
+- The theme is darker, with one amber accent for selection and the primary action. Mute is violet, and the muted tray badge is a violet disc crossed by a dark slash. Stop is a neutral button and Start is the amber one, with a play and a stop mark so they differ by shape too. The level meters run blue-grey, yellow, red instead of green, yellow, red, and the IN and OUT bars are drawn as lit steps. The focus ring has its own colour. Text is at least 12 px (11 px for axis ticks and keycaps), and every text pair measures at least 4.5:1, every control edge at least 3:1.
+- Message boxes, input and file dialogs and menus use the new look, with rounded menus and 36 px items. The tray menu keeps its items and its Mute check. Under reduced motion anything that moves takes 0 ms, colour and opacity changes keep a 100 ms fade, and the busy bar stops its sweep.
+
+### Equalizer
+
+- The page header reads "Equalizer" with the layer status under it (`Auto-EQ: <n> · Tone: <n>`; the `|` separator is now a middle dot). Show picks what the graph draws, Total, Tone or Auto-EQ, as one Tab stop moved with the arrow keys. The legend lists only what the chosen view draws. The Auto-EQ view draws no band handles and takes no presses or drags. Auto-EQ is an accent button, and Tone preset and the graph's help moved into More.
+- The EQ on/off switch is now only on the Equalizer row in the sidebar.
+- The graph draws the total as a bright line with a soft glow over a faint gradient, and the dashed line for each band is gone. The high-pass corner is named on the curve ("High-pass 80 Hz") with a dotted line. The selected band's handle has a ring instead of a number, and Auto-EQ bands show as open rings. Band colours are a softer set of ten, each at least 20 degrees of hue from its neighbour. Region names carry a hint under them when the plot is at least 560 px wide: rumble, warmth, boxiness, body, clarity, air / hiss. The duplicate frequency caption under the graph is gone.
+- The band settings sit in a panel docked under the graph, with a line in the band's colour from the selected handle to the panel. Its first row has the band number, Prev and Next and the band switch; the second has Type, Gain, Freq, "Width (Q)" and Slope. The band strip is one row when it fits and two near 900 px. One sentence describes the selected band, for example "Bell at 640 Hz · boosted, so it adds body around here."
+- A footer under the strip shows the calibration status and the legend, which wraps under the status when the line is short.
+- **Hold to hear original** plays your voice without the equalizer (tone and Auto-EQ) for as long as you hold the button, Space on the button, or B with the button or the graph focused. A note over the graph says "Hearing your original voice · callers hear it too · release to return", because there is one output. The equalizer comes back on release, when focus or the window moves away, on Stop, when the device is lost, when Voice Setup or Test my sound takes the audio, and before anything is saved on quit. A hold adds no undo step, does not change the unsaved-changes count and is never written to a preset. Any edit during a hold ends it and keeps the edit. The button is disabled while the audio is stopped, the device is lost or the equalizer is off, and its tooltip says why.
+- Undo is in the page header, with its tooltip naming the step (`Undo <step> (Ctrl+Z)`). Beside it a chip counts the edits since the last save ("1 change since saved", "N changes since saved"), hidden at zero. It returns to zero after a save and when an edit, undo or redo brings the sound back to what was saved. A caption describes the latest edit when it is one band value or one stage switch, for example "Band 1 gain -3.0 → -5.0 dB · 12 s ago" or "Noise gate off · 2 min ago".
+
+### Input analyser
+
+- While the stream runs, the Equalizer graph shows the microphone's spectrum as a blue fill behind the EQ curves, so you can see where your voice sits against the bands you are shaping. The legend adds "Input analyser" in every view while it shows.
+- The fill is the input before any processing. It rises at once and falls 20 dB in about 300 ms. The scale is fixed, with -90 dBFS at the bottom of the plot and -18 dBFS at the 0 dB line, so a quiet take looks quieter than a loud one.
+- It shows only on the Equalizer page while the stream runs. On another page, in the compact window, while minimized and after Stop, nothing is read and the fill is cleared.
+- The engine copies each input block into a 16384-sample ring and a worker thread runs a 2048-point FFT into 96 log-spaced bands from 20.7 Hz to 19.3 kHz. The copy does not allocate or lock, and a test checks that the output is bit for bit the same with the tap on, off and stalled, in the normal, bypass and raw-monitor paths.
+- Two new diagnostics: `input_spectrum_dropped_blocks` counts blocks dropped because the worker fell behind (shown as `ISD` in the Health counters), and `input_spectrum_worker_failed` is set when the worker panics or cannot start. The stream keeps running either way. Both are in the diagnostics export.
+
+### Command palette
+
+- Ctrl+K opens a command palette over the page: a search field above a list of commands. Typing filters, Up and Down move, Enter runs the row and Esc closes it. It works from a text field on the page and does nothing while a dialog is open.
+- Rows cover Start processing, Stop processing, Mute or Unmute, Run Auto Voice Setup and Test my sound; each stage switch; each built-in preset; and the gate threshold, compressor threshold, ratio and makeup gain, and limiter ceiling. For a setting, Left and Right change a draft by the setting's own step, Enter applies it as one undoable edit and Esc drops it.
+- Each row says what callers hear: "Callers hear this." for changes to the sound, and "Callers hear nothing while it runs." for Test my sound and Auto Voice Setup, which mute the live output. A row that cannot run now stays greyed out. With no match the list says "No matching commands".
+
+### Compact window
+
+- A small window to keep beside a call opens from the tray menu ("Compact window") or with Ctrl+Shift+A in the main window. It shows the status, the health summary, the input and output meters, Mute, Presets, Expand and the latency. It has no Stop button.
+- It stays on top of other windows; its "Keep on top" switch turns that off until you quit. While it shows, the main window hides without the "running in the background" notice, and the compact window has its own taskbar button and Alt+Tab entry.
+- Closing it, or pressing Ctrl+Shift+A inside it, returns the main window to how it was: shown, minimized or in the tray. Without a tray icon it always brings the main window back. Expand closes it and shows the main window. Esc does nothing, so a stray key during a call moves nothing.
+
+### Device loss and recovery
+
+- When the audio runs but its callbacks have stalled, the Overview offers **Restart audio** ("Stops the audio and starts it again with the same microphone and output."). It is not offered while the engine waits to retry on its own, and it is not held back by the half-second lockout after a Stop.
+- The device-lost Overview also offers **Choose another microphone**, a menu of the Input list with the current one ticked. Picking one stops the audio, selects that input as a pick in the Input list would, so it is saved the same way, and starts on it. It is offered while the engine retries, too. If the picked device is no longer listed, nothing stops and the status bar says "<name> is no longer in the Input list; refresh the audio devices".
+- If the start on the new device fails, the page stays on the device-lost state with "AudioForge could not start on <device>, so the audio is stopped. Choose another microphone, or check that this one is connected and press Restart audio." and the sidebar reads "Stopped · microphone failed". The page also says "Callers hear nothing until the audio is back."
+
+### Start and Stop
+
+- Stopping live audio from the Stop button, File > Stop Processing or Ctrl+. asks first: "Callers will hear nothing until audio is started again." The choices are Stop audio (the default) and Keep running (Esc). It asks only when audio is running, no start or stop is in progress and the output is not muted. Quitting, ending the session, the automatic stop when AudioForge would record its own output, a lost device and its recovery, and Restart audio never ask.
+- When the input clips, the Overview notice has two buttons. **Show me how** opens Windows Sound settings (`ms-settings:sound`); if it does not open, the notice says "Windows Sound settings did not open. Open Settings > System > Sound." **Remind me later** hides the notice until processing next stops or starts, and is not saved. Off Windows only Remind me later shows.
+
+### Dialogs
+
+- Auto Voice Setup, first-run setup, Auto-EQ Voice Tone, Latency Calibration and the listening comparison share one header: a glyph tile, the title, a subtitle that says where you are, an Esc keycap and a close cross. Esc and the cross run the dialog's existing cancel.
+- Voice Setup reads "Step N of 5: <step>", and each step says Done, This step (or Recording now) or Next. While a take records it shows "N s of 10 s recorded", the input level and peak, and three checks: too quiet, clipped and too short. The checks only describe the take; the same analysis as before decides whether setup refuses it. "Your settings stay as they were until you apply the review." shows until the review. The reading prompt is now "Read for the full 10 seconds".
+- First-run setup has a step rail that says This step, Done, Skipped or Not started, and the step names lose their numbers. "Optional. Also on the Settings page." sits under the advanced latency link.
+- Voice Setup, Auto-EQ, the listening comparison and the recording window share one muted banner that starts with "Live output muted." The comparison's mute now starts a moment before its window opens, where it used to start when the window opened.
+
+### Accessibility
+
+- In the Windows contrast themes the selected sidebar row's name and focus ring use the highlighted-text colour on the highlight fill (14.4:1 in High Contrast Black and 15.1:1 in High Contrast White; both were 1.0 to 1.5:1). Selected and hovered command palette rows do the same. The check in a step mark and the CLIP tag use a new `text_on_mark` colour, which was 1.1:1 in High Contrast White. The meter colours follow system colours and measure at least 14:1 on their track, where they fell to 1.5 to 2.8:1.
+- In the level history the output line is dashed and the input line stays solid, with matching legend swatches, so the two no longer differ by colour alone.
+- Hold to hear original can be latched for a screen reader or a switch: one activation starts the original and the next returns to the processed voice. The button says which voice is playing and announces the change. A latch ends on Stop, on leaving the page, when the button is disabled and on any pointer, Space or B press.
+- Voice Setup, first-run setup, Auto-EQ calibration and latency calibration announce each phase and status change once, a refused take is spoken, and warning banners announce when they appear.
+- The main pages scroll with the arrow keys, Page Up, Page Down, Home and End. Arrows stay with the controls and text fields that use them.
+- Health rows are Tab stops with a focus ring and show their tip on focus. The hint now reads "Point at or Tab to Drops or Recovery" instead of "Hover". Progress tracks expose their value as a percentage, and with animations off the busy track shows "Working". Card titles have the Heading role, and command palette rows have a press action.
+
 ### Internal
 
 - CVE-2026-126360, quadratic-time `traceparent` parsing in `opentelemetry-api` 1.37.0, is added to the pip-audit ignore table beside CVE-2026-114603. Semgrep 1.186.0 still pins `opentelemetry-api~=1.37.0`, so the development lock cannot move to the fixed 1.45.2. Semgrep reads `traceparent` only from its own environment with tracing on, which `run_semgrep.py` never enables.

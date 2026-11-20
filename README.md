@@ -15,7 +15,7 @@ your audio never leaves your PC.
 
 **[Download for Windows](https://github.com/FueledByRedBull/audio-forge/releases/latest)** · [Linux](#linux) · [Set up in five steps](#set-up) · [What it does](#what-it-does) · [No sound?](#no-sound)
 
-![AudioForge Mic page routing a studio microphone to the CABLE Input virtual cable, with the equalizer card drawing each band's curve, the Auto-EQ correction, the input filter and their total, the editor for the selected band, and level meters.](docs/images/audioforge-routing-eq.png)
+![AudioForge Equalizer page for a studio microphone routed to the CABLE Input virtual cable, drawing each band's curve, the Auto-EQ correction, the input filter and their total over the microphone's input spectrum, with the editor for the selected band and level meters.](docs/images/audioforge-routing-eq.png)
 
 > [!IMPORTANT]
 > **On Windows, using AudioForge in Discord, OBS, Zoom, or Teams also needs a
@@ -35,11 +35,11 @@ your audio never leaves your PC.
 | Stay in control | Presets, undo and redo, a mute shortcut, level meters that flag clipping, and health advice that says what to change. |
 
 <details>
-<summary>More screenshots: processing cards and Auto Voice Setup</summary>
+<summary>More screenshots: Overview and Auto Voice Setup</summary>
 
-### Processing cards
+### Overview
 
-![AudioForge cards for noise suppression, noise gate, de-esser, compressor and limiter, each with an on/off switch.](docs/images/audioforge-processing.png)
+![AudioForge Overview page while audio runs, with the live status, the last ten seconds of input and output level, an equalizer summary with buttons for Auto Voice Setup, Test my sound and Auto-EQ, and keyboard hints, beside a sidebar listing the signal chain with an on/off switch on each stage from noise gate to limiter.](docs/images/audioforge-overview.png)
 
 ### Auto Voice Setup
 
@@ -226,9 +226,22 @@ there.
 - **EQ graph:** hover to read the frequency and gain of the total curve.
   Double-click a band handle, or press **Delete** on the selected band, to reset
   that band as one undo step. In Bypass and Raw the graph says "EQ not running".
+  While audio runs, the graph also draws the microphone's input spectrum as a
+  blue fill behind the curves, before any processing, on a fixed scale from
+  -90 dBFS to -18 dBFS at the 0 dB line. It shows only on the Equalizer page.
+  **Hold to hear original** plays your voice without the EQ while you hold the
+  button or **B**.
+- **Command palette and compact window:** **Ctrl+K** opens a palette that
+  starts or stops processing, mutes, runs Auto Voice Setup or Test my sound,
+  switches a stage, loads a built-in preset and nudges key settings.
+  **Ctrl+Shift+A**, or **Compact window** in the tray menu, opens a small
+  always-on-top window with the status, meters, Mute and Presets to keep beside
+  a call.
 - **Shortcuts:** **Ctrl+S** saves your preset, **Ctrl+Shift+S** saves a copy,
   and **Ctrl+Z** / **Ctrl+Shift+Z** undo and redo. **Ctrl+Return** starts and
-  **Ctrl+.** stops processing. **Ctrl+M** mutes while the window has focus;
+  **Ctrl+.** stops processing, and stopping live audio asks first.
+  **Ctrl+K** opens the command palette and **Ctrl+Shift+A** the compact call
+  window. **Ctrl+M** mutes while the window has focus;
   **Ctrl+Alt+M** mutes from anywhere once you enable it under **Settings >
   Tray and background**.
 - **Unsaved changes:** quitting or switching presets offers Save, Discard, or
@@ -333,7 +346,7 @@ Reliability and diagnostics:
   apply there.
 - Health indicators that give the number and the action, for example how many
   decibels to lower the microphone level, plus technical counters behind
-  **Details**.
+  **Technical details**.
 - Automatic recovery. Only the audio engine watches the streams and restarts
   them: after a device error, a stalled callback, or about 1.5 seconds of exact
   digital silence at the output while the input is above -35 dB. Restarts wait

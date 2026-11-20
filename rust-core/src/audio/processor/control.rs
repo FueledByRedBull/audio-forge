@@ -115,7 +115,8 @@ impl GateControlState {
             attack_ms: GATE_ATTACK_DEFAULT_MS,
             release_ms: GATE_RELEASE_DEFAULT_MS,
             #[cfg(feature = "vad")]
-            gate_mode: GateMode::from_u8(GATE_MODE_DEFAULT).unwrap_or(GateMode::ThresholdOnly),
+            gate_mode: GateMode::from_u8(GATE_MODE_DEFAULT)
+                .expect("GATE_MODE_DEFAULT is a valid wire value"),
             #[cfg(feature = "vad")]
             vad_threshold: VAD_THRESHOLD_DEFAULT as f32,
             #[cfg(feature = "vad")]

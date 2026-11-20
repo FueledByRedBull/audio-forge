@@ -2091,6 +2091,13 @@ class MainWindow(QMainWindow):
             action.setChecked(preset_id == selected_id)
             action.setEnabled(route_key is not None)
 
+    @staticmethod
+    def _age_refusal(preset_id: str, status: LoadStatus) -> str | None:
+        """Why a preset that was not found was refused for its age, if it was."""
+        if status is not LoadStatus.MISSING:
+            return None
+        return refusal_reason_for_preset_id(preset_id, find_presets_refused_for_age())
+
     def _apply_bound_preset_for_current_route(self) -> bool:
         if not self.config.auto_apply_device_presets:
             return False
@@ -2126,13 +2133,7 @@ class MainWindow(QMainWindow):
                 5000,
             )
         else:
-            refusal = (
-                refusal_reason_for_preset_id(
-                    binding.preset_id, find_presets_refused_for_age()
-                )
-                if outcome.status is LoadStatus.MISSING
-                else None
-            )
+            refusal = self._age_refusal(binding.preset_id, outcome.status)
             self.status_message.showMessage(
                 f"The preset bound to this route was not opened; existing settings were kept. {refusal}"
                 if refusal
@@ -2592,13 +2593,7 @@ class MainWindow(QMainWindow):
                     "Startup preset %r not found; falling back to last used",
                     restore.startup_name,
                 )
-                refusal = (
-                    refusal_reason_for_preset_id(
-                        self.config.startup_preset, find_presets_refused_for_age()
-                    )
-                    if startup.status is LoadStatus.MISSING
-                    else None
-                )
+                refusal = self._age_refusal(self.config.startup_preset, startup.status)
                 self._report_preset_problem(
                     "startup_preset",
                     self.config.startup_preset,

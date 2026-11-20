@@ -10,7 +10,6 @@ RowLayout {
     property string subtitle
     // A code point of the system icon font; the tile is left out without that font.
     property string glyph
-    property string escHint: "Esc"
     // False when another item already reads the subtitle, such as a progress bar or a step strip.
     property bool subtitleAnnounced: true
     property string subtitleName: "dialogSubtitle"
@@ -24,19 +23,14 @@ RowLayout {
     // key chip and the cross, with the gaps between them.
     readonly property int minimumWidth: {
         titleMetrics.font
-        tickMetrics.font
         return 30 + Math.ceil(titleMetrics.advanceWidth(header.title)) + 2
-               + Math.ceil(tickMetrics.advanceWidth(header.escHint)) + 12 + 30 + 3 * spacing
+               + Math.ceil(esc.implicitWidth) + 30 + 3 * spacing
     }
 
     FontMetrics {
         id: titleMetrics
         font.pixelSize: Look.fsTitle
         font.weight: Font.DemiBold
-    }
-    FontMetrics {
-        id: tickMetrics
-        font.pixelSize: Look.fsTick
     }
 
     Rectangle {
@@ -84,40 +78,13 @@ RowLayout {
         }
     }
     EscChip {
-        text: header.escHint
-        visible: header.escHint !== ""
+        id: esc
     }
     // Esc and the Cancel button reach the same command from the keyboard, so the cross stays
     // out of the Tab order.
-    KeyButton {
-        id: closer
+    CloseCross {
         objectName: header.closeName
         focusPolicy: Qt.NoFocus
-        implicitWidth: 30
-        implicitHeight: 30
-        background: Rectangle {
-            visible: closer.hovered
-            radius: Look.t.radiusControl
-            color: Look.t.control_hover
-        }
-        // Two strokes, so the cross needs no icon font.
-        contentItem: Item {
-            Repeater {
-                model: [45, -45]
-                delegate: Rectangle {
-                    required property int modelData
-                    anchors.centerIn: parent
-                    width: 14
-                    height: 2
-                    radius: 1
-                    rotation: modelData
-                    color: closer.hovered ? Look.t.hover_text : Look.t.text_muted
-                }
-            }
-        }
-        Accessible.role: Accessible.Button
-        Accessible.name: "Close"
-        Accessible.description: header.escHint
         onClicked: header.closeRequested()
     }
 }

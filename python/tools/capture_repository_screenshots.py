@@ -6,9 +6,11 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, cast
+import numpy as np
 from release_provenance import sha256_file as _sha256
 from unittest.mock import patch
 
@@ -18,13 +20,14 @@ os.environ["QT_SCALE_FACTOR"] = "1"
 os.environ["QT_FONT_DPI"] = "96"
 os.environ.setdefault("AUDIOFORGE_REDUCED_MOTION", "1")
 
-from PySide6.QtCore import QByteArray, QEventLoop, QObject, QPointF, QRectF, QTimer
+from PySide6.QtCore import QByteArray, QEventLoop, QPointF, QRectF, QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QImageWriter
 from PySide6.QtWidgets import QApplication, QWidget
 
 from mic_eq.config import BUILTIN_PRESETS, TARGET_CURVES, AppConfig
 from mic_eq.ui import main_window as main_window_module
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.quick_shell import LEVEL_HISTORY
 from mic_eq.ui.theme import apply_application_theme
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from mic_eq.ui.voice_setup_view import DYNAMICS_KEYS
@@ -59,18 +62,21 @@ SCREENSHOTS: tuple[dict[str, str], ...] = (
         "filename": "audioforge-routing-eq.png",
         "view": "routing_eq",
         "alt": (
-            "AudioForge Mic page routing a studio microphone to the CABLE Input "
-            "virtual cable, with the equalizer card drawing each band's curve, the "
-            "Auto-EQ correction, the input filter and their total, the editor for "
-            "the selected band, and level meters."
+            "AudioForge Equalizer page for a studio microphone routed to the CABLE "
+            "Input virtual cable, drawing each band's curve, the Auto-EQ correction, "
+            "the input filter and their total over the microphone's input spectrum, "
+            "with the editor for the selected band and level meters."
         ),
     },
     {
-        "filename": "audioforge-processing.png",
-        "view": "processing",
+        "filename": "audioforge-overview.png",
+        "view": "overview",
         "alt": (
-            "AudioForge cards for noise suppression, noise gate, de-esser, "
-            "compressor and limiter, each with an on/off switch."
+            "AudioForge Overview page while audio runs, with the live status, the "
+            "last ten seconds of input and output level, an equalizer summary with "
+            "buttons for Auto Voice Setup, Test my sound and Auto-EQ, and keyboard "
+            "hints, beside a sidebar listing the signal chain with an on/off switch "
+            "on each stage from noise gate to limiter."
         ),
     },
     {
@@ -105,6 +111,7 @@ def _source_hashes() -> dict[str, str]:
         "python/mic_eq/ui/qml/BodyText.qml",
         "python/mic_eq/ui/qml/Chip.qml",
         "python/mic_eq/ui/qml/ChoiceBox.qml",
+        "python/mic_eq/ui/qml/CloseCross.qml",
         "python/mic_eq/ui/qml/CommandPalette.qml",
         "python/mic_eq/ui/qml/CompactWindow.qml",
         "python/mic_eq/ui/qml/DialogHeader.qml",
@@ -173,8 +180,9 @@ def _load_capture_font(app: QApplication) -> dict[str, str]:
     if not families:
         raise RuntimeError(f"Could not load capture font: {CAPTURE_FONT_FILENAME}")
     family = families[0]
-    # Icon glyphs come from whichever system icon font this Windows ships.
-    for icon_font_filename in ("SegoeIcons.ttf", "segmdl2.ttf"):
+    # Icon glyphs come from whichever system icon font this Windows ships; Segoe UI
+    # Symbol covers the check marks and arrows Segoe UI lacks, as on a real desktop.
+    for icon_font_filename in ("SegoeIcons.ttf", "segmdl2.ttf", "seguisym.ttf"):
         QFontDatabase.addApplicationFont(str(windows_root / "Fonts" / icon_font_filename))
     app.setFont(QFont(family, 9))
     return {
@@ -258,16 +266,52 @@ def _prepare_main_window() -> MainWindow:
     return window
 
 
-def _show_running_state(window: MainWindow) -> None:
-    """Match the session controls to the live meters and health chips above.
+def _level_series() -> list[list[float]]:
+    """Ten seconds of speech-like input and output level in dB, the same on every run."""
+    series: list[list[float]] = []
+    for index in range(LEVEL_HISTORY):
+        syllables = abs(math.sin(index * 0.11)) * (0.65 + 0.35 * math.sin(index * 0.37 + 1.0))
+        # Phrases with a pause between them.
+        phrase = 1.0 if math.sin(index * 0.05 + 0.6) > -0.6 else 0.06
+        microphone = -54.0 + 36.0 * syllables * phrase
+        # The chain evens the level out a little before it reaches callers.
+        series.append([microphone, -52.0 + 31.0 * syllables * phrase])
+    return series
 
-    Tab changes refresh the session summary from the stopped processor, so this
-    runs immediately before each main-window grab.
+
+def _analyser_spectrum() -> tuple[np.ndarray, np.ndarray]:
+    """A voice-like input spectrum in dBFS on the engine's 96 log-spaced bands."""
+    bands = 96
+    centres = 20.0 * 1000.0 ** ((np.arange(bands) + 0.5) / bands)
+    octaves = np.log2(centres / 250.0)
+    shape = np.where(octaves < 0, -35.0 + 12.0 * octaves, -35.0 - 8.5 * octaves)
+    # Voice harmonics show as ripple in the low bands and fade into the high ones.
+    ripple = 3.0 * np.sin(2.0 * np.pi * centres / 130.0) * np.exp(-centres / 1500.0)
+    return np.maximum(shape + ripple, -100.0).astype(np.float32), centres.astype(np.float32)
+
+
+def _show_running_state(window: MainWindow) -> None:
+    """Make the whole window look like audio is running, not only its top bar.
+
+    The Overview and the sidebar read the session's own flag, the stop control and
+    the level history. Tab changes refresh the session summary from the stopped
+    processor, so this runs immediately before each main-window grab.
     """
+    window._processing = True
     window.start_btn_action.setEnabled(False)
     window.stop_btn_action.setEnabled(True)
     window.shell_texts["transmission_status_label"].update(text="Transmission: Running / Normal")
     window._set_health_chip("health_summary_label", "Health: OK", "ok")
+    window.processing_meters.compressor_gr.set_gain_reduction(3.2)
+    window.processing_meters.limiter_gr.set_gain_reduction(0.8)
+    bridge = cast(Any, window).quick_bridge
+    # The bridge would append the stopped meters' readings to the history.
+    bridge._trace_timer.stop()
+    bridge._levels.clear()
+    bridge._levels.extend(_level_series())
+    bridge.levelsChanged.emit()
+    bridge.model["sidebar"]["lines"].refresh()
+    bridge.model["overview"].refresh()
 
 
 def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
@@ -370,27 +414,29 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
     window.show()
     app.processEvents()
     outputs: list[dict[str, Any]] = []
-    processing_scroll_position = 0
-    processing_scroll_maximum = 0
-    limiter_in_view = False
+    signal_chain_in_view = False
+    overview_state = ""
+    analyser_shown = False
     try:
         for specification in SCREENSHOTS[:2]:
+            graph_model = window.eq_presentation.graph_model
             if specification["view"] == "routing_eq":
                 window.shell_page.setIndex(MainWindow.EQUALIZER_PAGE_INDEX)
-            if specification["view"] == "processing":
+            if specification["view"] == "overview":
                 window.shell_page.setIndex(0)
-                app.processEvents()
-                scene = cast(Any, window.centralWidget()).rootObject()
-                page = scene.findChild(QObject, "overviewPage")
-                processing_scroll_maximum = max(
-                    0, round(page.property("contentHeight") - page.property("height"))
-                )
-                page.setProperty("contentY", processing_scroll_maximum)
-                processing_scroll_position = round(page.property("contentY"))
-                app.processEvents()
-                limiter_in_view = _limiter_row_in_view(scene)
             _show_running_state(window)
+            if specification["view"] == "routing_eq":
+                # The engine's spectrum is read only while the Equalizer page shows.
+                graph_model.set_input_spectrum(*_analyser_spectrum())
+            else:
+                graph_model.clear_input_spectrum()
             app.processEvents()
+            if specification["view"] == "routing_eq":
+                analyser_shown = graph_model.input_spectrum_db is not None
+            if specification["view"] == "overview":
+                scene = cast(Any, window.centralWidget()).rootObject()
+                signal_chain_in_view = _limiter_row_in_view(scene)
+                overview_state = cast(Any, window).quick_bridge.model["overview"].state
             # The scene draws a change on its next frame; without waiting the grab shows the one before.
             _wait_for_next_frame()
             path = output_dir / specification["filename"]
@@ -476,7 +522,9 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
         "checks": {
             "routing_shown": True,
             "eq_shown": True,
-            "processing_shown": True,
+            "overview_shown": True,
+            "overview_running": overview_state == "live",
+            "input_analyser_shown": analyser_shown,
             "auto_voice_setup_shown": True,
             "eq_recommendation_shown": eq_recommendation_shown,
             "alt_text_present": all(bool(item["alt"].strip()) for item in outputs),
@@ -484,13 +532,12 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
             "all_pngs_compressed": all(
                 item["bytes"] < item["width"] * item["height"] for item in outputs
             ),
-            # The limiter is the last stage of the chain the processing view shows.
-            "processing_scrolled_to_limiter": limiter_in_view,
+            # The limiter is the last stage of the chain the sidebar lists.
+            "signal_chain_in_view": signal_chain_in_view,
             "sanitized_sources_only": True,
         },
         "view_state": {
-            "processing_scroll_position": processing_scroll_position,
-            "processing_scroll_maximum": processing_scroll_maximum,
+            "overview_state": overview_state,
         },
         "screenshots": outputs,
         "source_sha256": _source_hashes(),

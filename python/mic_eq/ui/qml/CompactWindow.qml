@@ -158,11 +158,11 @@ Rectangle {
             id: health
             objectName: "compactHealth"
             readonly property var proxy: root.m.status.health
-            readonly property string tone: proxy.state !== "" ? proxy.state : "idle"
+            readonly property string tone: Look.statusState(proxy)
             implicitHeight: healthText.implicitHeight + 10
             radius: root.t.radiusControl
-            color: root.t["status_" + tone + "_surface"] ?? root.t.status_idle_surface
-            border.color: root.t["status_" + tone + "_border"] ?? root.t.status_idle_border
+            color: Look.statusSurface(tone)
+            border.color: Look.statusBorder(tone)
             Layout.fillWidth: true
             // The full text, when it does not fit.
             Hint { text: health.proxy.text; shown: healthText.truncated }
@@ -173,7 +173,7 @@ Rectangle {
                 anchors.rightMargin: 10
                 text: health.proxy.text
                 textFormat: Text.PlainText
-                color: root.t["status_" + health.tone + "_text"] ?? root.t.status_idle_text
+                color: Look.statusText(health.tone)
                 font.pixelSize: Look.fsCaption
                 elide: Text.ElideRight
                 verticalAlignment: Text.AlignVCenter
@@ -195,7 +195,6 @@ Rectangle {
             Column {
                 objectName: "compactLatency"
                 Text {
-                    id: latencyFigure
                     text: root.m.top.latency.text
                     textFormat: Text.PlainText
                     color: root.t.text_primary

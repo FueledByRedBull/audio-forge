@@ -522,6 +522,15 @@ def test_health_notifies_without_widget_polling(quick_window) -> None:
     assert status.state == "warn"
 
 
+def test_chain_lines_stay_quiet_on_a_meter_tick_that_changes_no_line(quick_window) -> None:
+    lines = quick_window.quick_bridge.model["sidebar"]["lines"]
+    before = lines.lines
+    emitted = QSignalSpy(lines.changed)
+    quick_window.processing_meters.compressor_gr.changed.emit()
+    assert emitted.count() == 0
+    assert lines.lines == before
+
+
 def test_opening_settings_refreshes_the_login_shortcut(quick_window, monkeypatch) -> None:
     window = quick_window
     opened: list[int] = []

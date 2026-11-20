@@ -45,7 +45,7 @@ from .engine_session import Restarted, RestartFailed, Started, Stopped
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
 from .control_specs import control_label
 from .eq_controls import EQControl
-from .eq_graph import GRAPH_VIEWS, EQGraphGeometry
+from .eq_graph import ANALYSER_LEGEND, GRAPH_VIEWS, EQGraphGeometry
 from .eq_hold_compare import EQHoldCompare
 from .eq_quick_compare import EQComparisonItem
 from .device_selection import VIRTUAL_OUTPUT_MARKERS
@@ -855,6 +855,8 @@ class QuickBridge(QObject):
                     }
                     for view in GRAPH_VIEWS
                 ],
+                # Drawn behind every view while the stream runs; the page adds it to the view's legend.
+                "analyserLegend": {"text": ANALYSER_LEGEND[0], "lineStyle": ANALYSER_LEGEND[1]},
             },
             "stages": stages,
             # The row of window shortcuts on the Overview, read from the actions themselves.

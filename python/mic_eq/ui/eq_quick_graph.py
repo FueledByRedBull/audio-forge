@@ -32,15 +32,20 @@ class EQGraphPreview(QQuickPaintedItem):
         if value is not None and not isinstance(value, EQGraphModel):
             raise TypeError("EQGraphItem.graph must be an EQGraphModel")
         if self._graph is not None:
-            for signal in (self._graph.changed, self._graph.hoverChanged):
+            for signal, slot in (
+                (self._graph.changed, self._update_graph),
+                (self._graph.hoverChanged, self._update_graph),
+                (self._graph.spectrumChanged, self._repaint),
+            ):
                 try:
-                    signal.disconnect(self._update_graph)
+                    signal.disconnect(slot)
                 except (RuntimeError, TypeError):
                     pass
         self._graph = value
         if self._graph is not None:
             self._graph.changed.connect(self._update_graph)
             self._graph.hoverChanged.connect(self._update_graph)
+            self._graph.spectrumChanged.connect(self._repaint)
         self.graphChanged.emit()
         self.update()
 
@@ -62,6 +67,11 @@ class EQGraphPreview(QQuickPaintedItem):
 
     @Slot()  # Register before QML adds properties to the metaobject.
     def _update_graph(self) -> None:
+        self.update()
+
+    @Slot()
+    def _repaint(self) -> None:
+        # The analyser moves no handle, so the item takes no handle update from it.
         self.update()
 
     def paint(self, painter: QPainter) -> None:

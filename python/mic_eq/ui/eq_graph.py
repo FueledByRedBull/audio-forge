@@ -7,6 +7,7 @@ from bisect import bisect_left
 from dataclasses import dataclass
 from functools import lru_cache
 
+import numpy as np
 from PySide6.QtCore import Property, QLineF, QObject, QPointF, QRect, QRectF, Qt, Signal, Slot
 from PySide6.QtGui import (
     QFont,
@@ -54,6 +55,8 @@ class GraphView:
 
 
 HIGH_PASS_LEGEND = (f"High-pass {PREFILTER_HIGHPASS_HZ} Hz", "dotted")
+# Drawn behind every view while the stream runs, so no view lists it; the legend adds it.
+ANALYSER_LEGEND = ("Input analyser", "fill")
 # What the graph shows: everything the signal gets, the user's bands, or the Auto-EQ layer.
 GRAPH_VIEWS = (
     GraphView(
@@ -86,6 +89,8 @@ def graph_view(show: str) -> GraphView:
         raise ValueError(f"unknown EQ graph layer: {show!r}") from None
 
 
+NO_BANDS = np.empty(0, dtype=np.float32)
+ANALYSER_DESCRIPTION = "The input analyser shows the microphone spectrum behind the curves."
 GRAPH_HELP = (
     "Click and drag a band handle. Left and right change frequency; "
     "up and down change gain for bell and shelf filters. Use left bracket "
@@ -194,6 +199,22 @@ class EQGraphGeometry:
         )
         return cls.MARGIN_TOP + normalized * plot_height
 
+    # The input analyser has its own vertical scale, apart from the EQ's dB axis: dBFS maps
+    # linearly, -90 dBFS at the plot's floor and -18 dBFS at the 0 dB line half way up, so
+    # ordinary speech fills the lower two thirds. Anything louder runs off the top.
+    ANALYSER_FLOOR_DBFS = -90.0
+    ANALYSER_ZERO_LINE_DBFS = -18.0
+
+    @classmethod
+    def analyser_to_y(cls, level_dbfs: float, width: float, height: float) -> float:
+        """Where the input analyser draws ``level_dbfs``, between the plot's top and floor."""
+        _plot_width, plot_height = cls.plot_size(width, height)
+        zero_line = cls.DISPLAY_DB_MAX / (cls.DISPLAY_DB_MAX - cls.DISPLAY_DB_MIN)
+        rise = (float(level_dbfs) - cls.ANALYSER_FLOOR_DBFS) / (
+            cls.ANALYSER_ZERO_LINE_DBFS - cls.ANALYSER_FLOOR_DBFS
+        )
+        return cls.MARGIN_TOP + plot_height * (1.0 - min(1.0, max(0.0, zero_line * rise)))
+
     @classmethod
     def y_to_db(cls, y: float, width: float, height: float) -> float:
         _plot_width, plot_height = cls.plot_size(width, height)
@@ -275,6 +296,8 @@ class EQGraphModel(QObject):
     # The accessible description changed at rest: not on every step of a drag,
     # which a screen reader would announce one by one.
     accessibleDescriptionChanged = Signal()
+    # The input analyser's levels or its presence changed; no response is recomputed for it.
+    spectrumChanged = Signal()
 
     GEOMETRY = EQGraphGeometry
     GAIN_FILTER_TYPES = EQGraphGeometry.GAIN_FILTER_TYPES
@@ -317,6 +340,9 @@ class EQGraphModel(QObject):
         self.input_filter_db: list[float] = []
         self.total_response_db: list[float] = []
         self.interaction_warnings: list[EqInteractionWarning] = []
+        # The input analyser behind the curves: a level in dBFS for each band centre, or None.
+        self.input_spectrum_db: np.ndarray | None = None
+        self.input_spectrum_hz: np.ndarray = NO_BANDS
         self._selected_band_index: int | None = None
         self._drag_band_index: int | None = None
         self._drag_origin: tuple[float, float] | None = None
@@ -398,8 +424,9 @@ class EQGraphModel(QObject):
                 f". {skipped} skipped in this mode; the thin band curves show what "
                 f"the EQ would do, and the thick curve is {thick}."
             )
+        analyser = ANALYSER_DESCRIPTION if self.input_spectrum_db is not None else ""
         return " ".join(
-            part for part in (GRAPH_HELP, not_running, self._selection_summary()) if part
+            part for part in (GRAPH_HELP, not_running, analyser, self._selection_summary()) if part
         )
 
     @Slot()
@@ -416,6 +443,30 @@ class EQGraphModel(QObject):
     accessibleDescription = Property(
         str, _announced_description, notify=accessibleDescriptionChanged
     )
+
+    def set_input_spectrum(self, levels_db: np.ndarray, frequencies_hz: np.ndarray) -> None:
+        """Show the input analyser: a level in dBFS for each band centre.
+
+        The model keeps both arrays as given, not copies, so the caller may
+        refill ``levels_db`` in place and call this again for each new reading.
+        """
+        if len(levels_db) != len(frequencies_hz):
+            raise ValueError("the analyser needs one level for each band frequency")
+        appeared = self.input_spectrum_db is None
+        self.input_spectrum_db = levels_db
+        self.input_spectrum_hz = frequencies_hz
+        if appeared:
+            self._refresh_description()  # said once, not on every reading
+        self.spectrumChanged.emit()
+
+    def clear_input_spectrum(self) -> None:
+        """Stop showing the input analyser."""
+        if self.input_spectrum_db is None:
+            return
+        self.input_spectrum_db = None
+        self.input_spectrum_hz = NO_BANDS
+        self._refresh_description()
+        self.spectrumChanged.emit()
 
     def set_engine_mode(self, mode: str) -> None:
         """Follow what the processor runs: normal, bypass or raw monitor."""
@@ -854,6 +905,9 @@ class EQGraphRenderer:
     # the axis, and fades out toward the top and the bottom of the plot.
     FILL_ALPHA = 18
     AXIS_TOLERANCE_DB = 0.3
+    # The input analyser's area is strongest at its top edge and almost gone at the plot's floor.
+    ANALYSER_FILL_ALPHA = (107, 8)
+    ANALYSER_LINE_WIDTH = 1.2
     CASING_WIDTH = 3.0
     MUTED_OPACITY = 0.4
     LABEL_PX = 12
@@ -1219,6 +1273,38 @@ class EQGraphRenderer:
         return runs
 
     @classmethod
+    def _paint_analyser(
+        cls, painter: QPainter, model: EQGraphModel, plot: QRectF, width: int, height: int
+    ) -> None:
+        """The input spectrum as an area from the plot's floor, behind every curve; nothing without one."""
+        levels, frequencies = model.input_spectrum_db, model.input_spectrum_hz
+        geometry = cls.GEOMETRY
+        if levels is None or not len(levels) or max(levels) <= geometry.ANALYSER_FLOOR_DBFS:
+            return
+        # The first and last levels carry on to the plot's edges, so the area leaves no gap there.
+        points = [
+            QPointF(geometry.frequency_to_x(frequency, width, height),
+                    geometry.analyser_to_y(level, width, height))
+            for frequency, level in zip(frequencies, levels)
+        ]
+        points = [QPointF(plot.left(), points[0].y()), *points, QPointF(plot.right(), points[-1].y())]
+        crest = min(point.y() for point in points)
+        fill = QLinearGradient(0.0, crest, 0.0, plot.bottom())
+        top_alpha, bottom_alpha = cls.ANALYSER_FILL_ALPHA
+        fill.setColorAt(0.0, qcolor(PALETTE.analyser_fill, alpha=top_alpha))
+        fill.setColorAt(1.0, qcolor(PALETTE.analyser_fill, alpha=bottom_alpha))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(fill)
+        painter.drawPolygon(
+            QPolygonF([QPointF(plot.left(), plot.bottom()), *points, QPointF(plot.right(), plot.bottom())])
+        )
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        line = QPen(qcolor(PALETTE.analyser_line), cls.ANALYSER_LINE_WIDTH)
+        line.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(line)
+        painter.drawPolyline(QPolygonF(points))
+
+    @classmethod
     def _paint_curves(
         cls,
         painter: QPainter,
@@ -1264,6 +1350,7 @@ class EQGraphRenderer:
         plot = QRectF(geometry.MARGIN_LEFT, top, plot_width, plot_height)
         painter.setClipRect(plot)
         zero_y = top + geometry.DISPLAY_DB_MAX * pixels_per_db
+        cls._paint_analyser(painter, model, plot, width, height)
         view = graph_view(show)
         thick = model.thick_response_db(show)
         # The tone is what the EQ would do; it is muted, as the bands are, when the EQ does not run.

@@ -160,6 +160,7 @@ _RUNTIME_NUMBERS = frozenset(
         "input_rms_db",
         "input_phase_estimated_delay_samples",
         "input_phase_warning_count",
+        "input_spectrum_dropped_blocks",
         "input_stereo_correlation",
         "jitter_dropped_samples",
         "lock_contention_count",

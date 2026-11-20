@@ -779,3 +779,27 @@ def test_a_new_main_window_has_no_setup_result(isolated_main_window) -> None:
     assert window.last_setup_result is None
     window.record_setup_result(_setup_result())
     assert cast(Any, window.last_setup_result)["outcome"] == "rolled_back"
+
+
+def _exported_runtime(runtime: dict[str, object]) -> dict[str, Any]:
+    return build_diagnostics_snapshot(
+        app_version="1.10.1",
+        runtime_diagnostics=RuntimeSnapshot.parse(runtime),
+        config=_config(),
+        processing_settings=Preset().to_dict(),
+        input_device=None,
+        output_device=None,
+        processing_sample_rate_hz=48_000,
+        output_sample_rate_hz=48_000,
+        running=True,
+        generated_at=FIXED_TIME,
+        pseudonym_key=b"K" * 32,
+        system_info=FIXED_SYSTEM,
+    )["runtime"]
+
+
+def test_a_stalled_input_analyser_shows_in_the_export() -> None:
+    assert _exported_runtime({**_runtime(), "input_spectrum_dropped_blocks": 4})["input_spectrum_dropped_blocks"] == 4
+    # A count the engine did not send is left out, and a bad one is exported as null.
+    assert "input_spectrum_dropped_blocks" not in _exported_runtime(_runtime())
+    assert _exported_runtime({**_runtime(), "input_spectrum_dropped_blocks": "many"})["input_spectrum_dropped_blocks"] is None

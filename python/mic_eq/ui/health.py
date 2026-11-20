@@ -469,6 +469,7 @@ _ENGINE_TOKENS = (
     ("gate_auto_relax_active", "GAR"),
     ("deesser_detector_confidence", "DSC"),
     ("noise_selection_dropped_count", "NSD"),
+    ("input_spectrum_dropped_blocks", "ISD"),
 )
 _RECOVERY_EVENTS = frozenset({
     "stream_restart_count", "output_recovery_count", "output_recovery_event_count",

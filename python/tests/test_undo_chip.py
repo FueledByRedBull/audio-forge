@@ -416,9 +416,9 @@ def test_the_undo_group_keeps_clear_of_the_header_buttons_at_the_minimum_width(
     model = window.quick_bridge.model
     group = _find(window, "undoHistory")
     others = [
-        _with_proxy(window, "Btn", model["eq"]["tone"]),
+        _find(window, "eqShow"),
         _with_proxy(window, "Btn", model["presets"]["autoEq"]),
-        _with_proxy(window, "IconBtn", model["eq"]["menu"]),
+        _with_proxy(window, "Btn", model["eq"]["menu"]),
     ]
     rect = group.mapRectToScene(group.boundingRect())
     for other in others:

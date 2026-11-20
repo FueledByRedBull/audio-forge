@@ -6,19 +6,21 @@ from PySide6.QtCore import QObject, Property, Qt, Signal, Slot
 from PySide6.QtGui import QHoverEvent, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtQuick import QQuickPaintedItem
 
-from .eq_graph import EQGraphModel, EQGraphRenderer
+from .eq_graph import EQGraphModel, EQGraphRenderer, graph_view
 
 
 class EQGraphPreview(QQuickPaintedItem):
     """The shared model's curves, read-only: no handles, input or focus."""
 
     graphChanged = Signal()
+    showChanged = Signal()
     # The graph item paints the band handles a user drags.
     HANDLES = False
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._graph: EQGraphModel | None = None
+        self._show = "total"
         self.setAntialiasing(True)
 
     def _get_graph(self) -> QObject | None:
@@ -44,6 +46,20 @@ class EQGraphPreview(QQuickPaintedItem):
 
     graph = Property(QObject, _get_graph, _set_graph, notify=graphChanged)
 
+    def _get_show(self) -> str:
+        return self._show
+
+    def _set_show(self, value: str) -> None:
+        graph_view(value)  # An unknown view is a ValueError.
+        if value == self._show:
+            return
+        self._show = value
+        self.showChanged.emit()
+        self.update()
+
+    # Which layers the graph draws: "total", "tone" or "auto_eq".
+    show = Property(str, _get_show, _set_show, notify=showChanged)
+
     @Slot()  # Register before QML adds properties to the metaobject.
     def _update_graph(self) -> None:
         self.update()
@@ -56,6 +72,7 @@ class EQGraphPreview(QQuickPaintedItem):
                 self.width(),
                 self.height(),
                 handles=self.HANDLES,
+                show=self._show,
             )
 
 
@@ -87,22 +104,27 @@ class EQGraphItem(EQGraphPreview):
 
     @Slot(int, result=float)
     def handleBottom(self, band: int) -> float:
-        """How far down the item band ``band``'s handle ends, its ring included."""
+        """How far down the item band ``band``'s handle ends, its rings included."""
         if self._graph is None or not 0 <= band < len(self._graph.bands):
             return 0.0
         geometry = self._graph.GEOMETRY
-        radius = (
-            geometry.SELECTED_HANDLE_RADIUS
+        reach = (
+            geometry.SELECTION_RING_RADIUS + EQGraphRenderer.SELECTION_RING_WIDTH / 2
             if band == self._graph.selected_band_index
-            else geometry.HANDLE_RADIUS
+            else geometry.HANDLE_RADIUS + EQGraphRenderer.HANDLE_RING_WIDTH
         )
         _x, y = self._graph.band_handle_position(band, self.width(), self.height())
-        return y + radius + EQGraphRenderer.HANDLE_RING_WIDTH
+        return y + reach
+
+    def _edits_bands(self) -> bool:
+        # The Auto-EQ view draws no band handles, so the graph takes no edits on them.
+        return graph_view(self._show).bands
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         graph = self._graph
         if (
             graph is None
+            or not self._edits_bands()
             or event.button() != Qt.MouseButton.LeftButton
             or graph.nearest_band_handle(
                 event.position().x(),
@@ -129,6 +151,7 @@ class EQGraphItem(EQGraphPreview):
         graph = self._graph
         if (
             graph is None
+            or not self._edits_bands()
             or event.button() != Qt.MouseButton.LeftButton
             or not graph.request_band_reset(
                 event.position().x(),

@@ -308,8 +308,8 @@ def test_b_on_the_focused_button_holds_as_its_keycap_says(live, qapp) -> None:
 def test_b_is_no_window_shortcut(live, qapp) -> None:
     window = live
     view = window.centralWidget()
-    tone = _with_proxy(window, "Btn", window.quick_bridge.model["eq"]["tone"])
-    _focus(window, tone, qapp)
+    more = _with_proxy(window, "Btn", window.quick_bridge.model["eq"]["menu"])
+    _focus(window, more, qapp)
     _key(window, QEvent.Type.KeyPress, Qt.Key.Key_B, "b")
     assert not _held(window)
     _key(window, QEvent.Type.KeyRelease, Qt.Key.Key_B, "b")

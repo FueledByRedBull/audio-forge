@@ -304,7 +304,7 @@ def _show_running_state(window: MainWindow) -> None:
     window._set_health_chip("health_summary_label", "Health: OK", "ok")
     window.processing_meters.compressor_gr.set_gain_reduction(3.2)
     window.processing_meters.limiter_gr.set_gain_reduction(0.8)
-    bridge = window.quick_bridge
+    bridge = cast(Any, window).quick_bridge
     # The bridge would append the stopped meters' readings to the history.
     bridge._trace_timer.stop()
     bridge._levels.clear()
@@ -436,7 +436,7 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
             if specification["view"] == "overview":
                 scene = cast(Any, window.centralWidget()).rootObject()
                 signal_chain_in_view = _limiter_row_in_view(scene)
-                overview_state = window.quick_bridge.model["overview"].state
+                overview_state = cast(Any, window).quick_bridge.model["overview"].state
             # The scene draws a change on its next frame; without waiting the grab shows the one before.
             _wait_for_next_frame()
             path = output_dir / specification["filename"]

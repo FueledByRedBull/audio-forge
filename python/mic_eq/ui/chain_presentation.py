@@ -55,7 +55,9 @@ def _reduction(enabled: bool, running: bool, reduction_db: float | None) -> Chai
     if not running or reduction_db is None:
         return ChainLine("Idle", metered=True)
     activity = max(0.0, min(1.0, reduction_db / FULL_ACTIVITY_DB))
-    return ChainLine(f"Reduction {reduction_db:.1f} dB", activity, metered=True)
+    # Short enough to sit beside the activity bar in the narrow sidebar.
+    amount = f"{reduction_db:.0f}" if reduction_db >= 9.95 else f"{reduction_db:.1f}"
+    return ChainLine(f"Cut {amount} dB", activity, metered=True)
 
 
 def describe_chain(inputs: ChainInputs) -> dict[str, ChainLine]:

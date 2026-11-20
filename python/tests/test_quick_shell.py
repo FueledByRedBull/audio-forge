@@ -2684,7 +2684,7 @@ def test_the_limiter_row_reads_the_reduction_of_each_diagnostics_tick(engine_win
     window.start_btn_action.trigger()
     window._update_diagnostics()
     qapp.processEvents()
-    assert _nav_detail(window, "Limiter") == "Reduction 3.2 dB"
+    assert _nav_detail(window, "Limiter") == "Cut 3.2 dB"
     window.stop_btn_action.trigger()
     qapp.processEvents()
     assert _nav_detail(window, "Limiter") == "Idle"

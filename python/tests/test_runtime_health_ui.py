@@ -47,6 +47,7 @@ def test_presentation_timer_pauses_without_stopping_diagnostics(qapp):
         isMinimized=lambda: state["minimized"],
         meter_timer=meter_timer,
         _invalidate_live_meters=Mock(),
+        _clear_input_analyser=Mock(),
         _note_meter_peaks=Mock(),
     )
     try:
@@ -709,6 +710,8 @@ def test_main_window_invalidates_all_live_meters_on_stop_and_getter_failure(qapp
     )
     window._invalidate_live_meters = lambda: MainWindow._invalidate_live_meters(window)
     window._note_meter_peaks = lambda reading: MainWindow._note_meter_peaks(window, reading)
+    window._update_input_analyser = lambda: MainWindow._update_input_analyser(window)
+    window._clear_input_analyser = lambda: MainWindow._clear_input_analyser(window)
     try:
         MainWindow._update_meters(window)
         assert window.input_meter.measurement_available

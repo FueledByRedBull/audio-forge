@@ -151,7 +151,9 @@ is in the [Linux section](https://github.com/FueledByRedBull/audio-forge#linux).
   Health rows are Tab stops, and card titles have the Heading role.
 - **Security and build.** The development lock ignores CVE-2026-126360 in
   `opentelemetry-api` 1.37.0, which Semgrep pins and reads only with tracing
-  on, which `run_semgrep.py` never enables. The DeepFilter build moves `rustix`
+  on, which `run_semgrep.py` never enables, and CVE-2026-132276 in `wcmatch`
+  8.5.2, which Semgrep also pins and uses only on this repository's own paths.
+  The DeepFilter build moves `rustix`
   to 1.1.6 for RUSTSEC-2026-0486. The pinned ONNX Runtime 1.23.2 CPU files now
   come from Microsoft's signed NuGet package, byte-identical to the existing
   pins, and its source archive from the project's `third-party-sources`

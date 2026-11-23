@@ -20,6 +20,9 @@ updates:
       # semgrep pins mcp ==1.29.0 exactly, so a bump cannot install. Drop this with the
       # mcp pip-audit exceptions.
       - dependency-name: mcp
+      # semgrep pins wcmatch ~=8.3, so a bump cannot install. Drop this with the
+      # CVE-2026-132276 pip-audit exception.
+      - dependency-name: wcmatch
 
   - package-ecosystem: cargo
     directory: /

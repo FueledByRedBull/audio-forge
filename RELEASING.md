@@ -277,7 +277,7 @@ stress test, then:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603 --ignore-vuln CVE-2026-126360 --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603 --ignore-vuln CVE-2026-126360 --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686 --ignore-vuln CVE-2026-115563 --ignore-vuln CVE-2026-132276
 .\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
 .\.venv\Scripts\python.exe python\tools\check_workflows.py
@@ -305,15 +305,17 @@ cargo audit
   release from an environment resolved from open `pyproject.toml` ranges.
   The runtime audit has no ignores. The development audit ignores only
   ids caused by a Semgrep pin. CVE-2026-59951, CVE-2026-116684,
-  CVE-2026-116685 and CVE-2026-116686: Semgrep pins `mcp==1.29.0` and only
-  its MCP server uses it. CVE-2026-114603 and CVE-2026-126360: Semgrep pins
-  `opentelemetry-api~=1.37.0`; both are in parsing `tracestate` and
-  `traceparent` values. Semgrep only exports telemetry and reads `traceparent`
-  only from its own environment with tracing on, which `run_semgrep.py` never
-  enables. Remove each ignore
-  when Semgrep allows `mcp>=1.30.0` or `opentelemetry-api>=1.45.2`;
-  `check_workflows.py` rejects an ignore once the lock stops pinning 1.29.0 or
-  1.37.0.
+  CVE-2026-116685, CVE-2026-116686 and CVE-2026-115563: Semgrep pins
+  `mcp==1.29.0` and only its MCP server uses it. CVE-2026-114603 and
+  CVE-2026-126360: Semgrep pins `opentelemetry-api~=1.37.0`; both are in
+  parsing `tracestate` and `traceparent` values. Semgrep only exports
+  telemetry and reads `traceparent` only from its own environment with tracing
+  on, which `run_semgrep.py` never enables. CVE-2026-132276: Semgrep pins
+  `wcmatch~=8.3`; the backtracking needs an attacker-controlled file name, and
+  Semgrep matches only this repository's own paths. Remove each ignore when
+  Semgrep allows `mcp>=1.30.0`, `opentelemetry-api>=1.45.2` or
+  `wcmatch>=11.2`; `check_workflows.py` rejects an ignore once the lock stops
+  pinning 1.29.0, 1.37.0 or 8.5.2.
 - **Package check:** `package-check.yml` builds the bundle and the MSI and
   runs the package smoke, the hidden `--smoke-test` and the MSI smoke on every
   push to `master` and on pull requests that touch packaging inputs. It

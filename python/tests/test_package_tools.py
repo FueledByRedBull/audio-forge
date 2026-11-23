@@ -358,6 +358,7 @@ MCP_SDK_IGNORES = (
     " --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686"
     " --ignore-vuln CVE-2026-115563"
 )
+WCMATCH_IGNORE = " --ignore-vuln CVE-2026-132276"
 
 
 def _workflow_text(name):
@@ -454,10 +455,10 @@ def test_audit_ignore_edits_are_rejected(tmp_path, monkeypatch, audit, replaceme
 def test_dev_audit_ignores_exactly_the_semgrep_pinned_advisories(workflow):
     workflow_file = check_workflows.WORKFLOW_DIR / workflow
     source = workflow_file.read_text(encoding="utf-8")
-    assert f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE}{MCP_SDK_IGNORES}" in source
+    assert f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE}{MCP_SDK_IGNORES}{WCMATCH_IGNORE}\n" in source
     assert set(check_workflows.AUDIT_IGNORES) == {
         "CVE-2026-59951", "CVE-2026-114603", "CVE-2026-126360", "CVE-2026-116684", "CVE-2026-116685",
-        "CVE-2026-116686", "CVE-2026-115563",
+        "CVE-2026-116686", "CVE-2026-115563", "CVE-2026-132276",
     }
     dev_lock = check_workflows.DEV_LOCK_PATH.read_text(encoding="utf-8")
     for package, version in check_workflows.AUDIT_IGNORES.values():
@@ -467,8 +468,9 @@ def test_dev_audit_ignores_exactly_the_semgrep_pinned_advisories(workflow):
 @pytest.mark.parametrize(
     ("lock", "stale", "count"),
     [
-        ("mcp==1.29.0\nopentelemetry-api==1.45.1\n", "CVE-2026-114603", 2),
-        ("mcp==1.30.0\nopentelemetry-api==1.37.0\n", "CVE-2026-59951", 5),
+        ("mcp==1.29.0\nopentelemetry-api==1.45.1\nwcmatch==8.5.2\n", "CVE-2026-114603", 2),
+        ("mcp==1.30.0\nopentelemetry-api==1.37.0\nwcmatch==8.5.2\n", "CVE-2026-59951", 5),
+        ("mcp==1.29.0\nopentelemetry-api==1.37.0\nwcmatch==11.2\n", "CVE-2026-132276", 1),
     ],
 )
 def test_each_audit_ignore_is_rejected_once_its_own_package_moves(

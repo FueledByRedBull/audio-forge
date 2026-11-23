@@ -106,7 +106,11 @@ jobs:
           # only exports telemetry and reads traceparent only from its own
           # environment with tracing on, which run_semgrep.py never enables.
           # Remove the ignores when semgrep allows opentelemetry-api>=1.45.2.
-          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603 --ignore-vuln CVE-2026-126360 --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686 --ignore-vuln CVE-2026-115563
+          # semgrep pins wcmatch~=8.3 too, so the lock cannot move off
+          # CVE-2026-132276, backtracking when an attacker-controlled name meets
+          # a multi-star pattern. semgrep matches only this repository's own
+          # paths. Remove the ignore when semgrep allows wcmatch>=11.2.
+          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603 --ignore-vuln CVE-2026-126360 --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686 --ignore-vuln CVE-2026-115563 --ignore-vuln CVE-2026-132276
           if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
 
       - name: Ruff

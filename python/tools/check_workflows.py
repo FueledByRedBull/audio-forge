@@ -142,6 +142,8 @@ HEAD_IS_TAG_COMMIT = re.compile(
 # TraceContextTextMapPropagator.extract). semgrep only exports telemetry and reads
 # traceparent only from its own environment with tracing on, which run_semgrep.py
 # never enables.
+# CVE-2026-132276: semgrep pins wcmatch~=8.3 (through 1.186.0); the backtracking
+# needs an attacker-controlled name, and semgrep matches only this repository's paths.
 AUDIT_IGNORES = {
     "CVE-2026-59951": ("mcp", "1.29.0"),
     "CVE-2026-116684": ("mcp", "1.29.0"),
@@ -150,6 +152,7 @@ AUDIT_IGNORES = {
     "CVE-2026-115563": ("mcp", "1.29.0"),
     "CVE-2026-114603": ("opentelemetry-api", "1.37.0"),
     "CVE-2026-126360": ("opentelemetry-api", "1.37.0"),
+    "CVE-2026-132276": ("wcmatch", "8.5.2"),
 }
 CARGO_LOCKED_COMMANDS = ("build", "test", "clippy", "run")
 ACTION_REF = re.compile(
